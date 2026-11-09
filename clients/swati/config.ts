@@ -2,8 +2,8 @@ import type { ClientConfig } from "@/types/client";
 
 export const clientConfig: ClientConfig = {
   id: "swati",
-  businessName: "Swati Home Tuition Bureau",
-  shortName: "Swati HTB",
+  businessName: "cb jha  home tution beauro",
+  shortName: "cb jha  home tution beauro",
   logoPath: "/clients/swati/logo.png",
   faviconPath: "/clients/swati/favicon.ico",
   colors: {
@@ -14,7 +14,7 @@ export const clientConfig: ClientConfig = {
   contact: {
     phone: "+919876543210",
     whatsapp: "+919876543210",
-    email: "contact@swatituitions.com",
+    email: "aman.kalpra.11@gmail.com",
     city: "Patna",
   },
   locale: {

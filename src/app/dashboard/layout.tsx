@@ -29,6 +29,18 @@ export default function DashboardLayout({
   const router = useRouter();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [globalSearch, setGlobalSearch] = useState("");
+  const [bureauName, setBureauName] = useState("Tuition Bureau");
+
+  React.useEffect(() => {
+    fetch("/api/admin/settings")
+      .then((res) => res.json())
+      .then((json) => {
+        if (json?.settings?.branding?.bureauName) {
+          setBureauName(json.settings.branding.bureauName);
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   const navigation = [
     { name: "Overview", href: "/dashboard", icon: LayoutDashboard },
@@ -62,11 +74,11 @@ export default function DashboardLayout({
       {/* Desktop Sidebar (Section 13) */}
       <aside className="hidden md:flex flex-col w-64 bg-white border-r border-gray-200">
         <div className="h-16 flex items-center px-6 border-b border-gray-200 gap-3">
-          <div className="w-8 h-8 rounded-lg bg-blue-600 text-white font-bold flex items-center justify-center text-sm shadow-sm">
-            TB
+          <div className="w-8 h-8 rounded-lg bg-blue-600 text-white font-bold flex items-center justify-center text-xs shadow-sm uppercase shrink-0">
+            {bureauName ? bureauName.slice(0, 2) : "TB"}
           </div>
-          <div>
-            <h2 className="text-sm font-bold text-gray-900 leading-tight">Tuition Bureau</h2>
+          <div className="min-w-0">
+            <h2 className="text-sm font-bold text-gray-900 leading-tight truncate">{bureauName}</h2>
             <p className="text-[10px] text-gray-400 font-medium">ADMIN PORTAL</p>
           </div>
         </div>
@@ -121,7 +133,7 @@ export default function DashboardLayout({
           />
           <div className="relative flex flex-col w-64 bg-white shadow-xl z-10">
             <div className="h-16 flex items-center justify-between px-6 border-b border-gray-200">
-              <span className="font-bold text-sm text-gray-900">Tuition Bureau</span>
+              <span className="font-bold text-sm text-gray-900 truncate">{bureauName}</span>
               <button
                 type="button"
                 onClick={() => setMobileMenuOpen(false)}

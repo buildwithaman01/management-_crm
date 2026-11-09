@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import Link from "next/link";
 import { SearchInput } from "@/components/ui/search-input";
 import { StatusBadge } from "@/components/ui/status-badge";
@@ -23,6 +23,7 @@ import {
   UploadCloud,
   ZoomIn,
   Download,
+  Phone,
 } from "lucide-react";
 import { formatDate, formatCurrency } from "@/lib/utils";
 import { Tutor } from "@/types/entities";
@@ -34,6 +35,8 @@ export default function TutorsPage() {
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedVerification, setSelectedVerification] = useState<string>("ALL");
   const [selectedSubject, setSelectedSubject] = useState<string>("ALL");
+  const [selectedClass, setSelectedClass] = useState<string>("ALL");
+  const [selectedLocality, setSelectedLocality] = useState<string>("ALL");
   const [showArchived, setShowArchived] = useState(false);
   const [activeTutor, setActiveTutor] = useState<Tutor | null>(null);
 
@@ -41,6 +44,7 @@ export default function TutorsPage() {
   const [verifyModalAction, setVerifyModalAction] = useState<"VERIFY" | "REJECT" | "BLACKLIST" | null>(null);
   const [actionReason, setActionReason] = useState("");
   const [verifyError, setVerifyError] = useState<string | null>(null);
+  const [isSubmittingVerify, setIsSubmittingVerify] = useState(false);
 
   // Edit & Delete modal states
   const [editingTutor, setEditingTutor] = useState<Tutor | null>(null);
@@ -64,9 +68,37 @@ export default function TutorsPage() {
   const [lightboxImage, setLightboxImage] = useState<{ url: string; title: string } | null>(null);
   const [isUploadingDoc, setIsUploadingDoc] = useState<string | null>(null);
 
+  // Extract all unique localities across tutors & standard Patna areas
+  const allLocalities = useMemo(() => {
+    const locSet = new Set<string>();
+    [
+      "Kankarbagh", "Boring Road", "Bailey Road", "Rajendra Nagar", "Anisabad",
+      "Ashiana Nagar", "Danapur", "Patliputra", "Fraser Road", "Saguna More",
+      "Kadamkuan", "Exhibition Road", "Digha", "Gardanibagh", "Raja Bazar", "Phulwari Sharif"
+    ].forEach((l) => locSet.add(l));
+
+    tutors.forEach((t) => {
+      if (t.current_locality) locSet.add(t.current_locality);
+      if (t.localities) {
+        t.localities.split("|").forEach((l) => {
+          const trimmed = l.trim();
+          if (trimmed) locSet.add(trimmed);
+        });
+      }
+    });
+    return Array.from(locSet).sort();
+  }, [tutors]);
+
+  function getDocViewUrl(val?: string, tutorName = "Tutor", type = "document"): string {
+    if (!val) return "";
+    if (val.startsWith("data:image") || val.startsWith("http://") || val.startsWith("https://") || val.startsWith("/")) {
+      return val;
+    }
+    return `/api/admin/files/view?id=${encodeURIComponent(val)}&name=${encodeURIComponent(tutorName)}&type=${encodeURIComponent(type)}`;
+  }
+
   function isImageUrl(val?: string): boolean {
-    if (!val) return false;
-    return val.startsWith("data:image") || val.startsWith("http://") || val.startsWith("https://") || val.startsWith("/");
+    return Boolean(val && val.trim().length > 0);
   }
 
   function readFileAsDataUrl(file: File, maxWidth = 1200): Promise<string> {
@@ -222,11 +254,15 @@ export default function TutorsPage() {
   const handleVerificationSubmit = async () => {
     if (!activeTutor || !verifyModalAction) return;
     setVerifyError(null);
+    setIsSubmittingVerify(true);
 
-    if ((verifyModalAction === "REJECT" || verifyModalAction === "BLACKLIST") && !actionReason.trim()) {
-      setVerifyError("A reason is mandatory when rejecting or blacklisting a tutor.");
-      return;
-    }
+    const effectiveReason = actionReason.trim() || (
+      verifyModalAction === "VERIFY"
+        ? "Manually verified by admin"
+        : verifyModalAction === "REJECT"
+        ? "Application rejected by admin"
+        : "Blacklisted by admin"
+    );
 
     try {
       const res = await fetch(`/api/admin/tutors/${activeTutor.tutor_id}/verify`, {
@@ -234,7 +270,7 @@ export default function TutorsPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           action: verifyModalAction,
-          reason: actionReason,
+          reason: effectiveReason,
         }),
       });
 
@@ -251,41 +287,112 @@ export default function TutorsPage() {
           ? "REJECTED"
           : "BLACKLISTED";
 
+      const updatedTutor = json.tutor || {
+        ...activeTutor,
+        verification_status: newStatus as TutorVerificationStatus,
+      };
+
       setTutors((prev) =>
         prev.map((t) =>
-          t.tutor_id === activeTutor.tutor_id
-            ? { ...t, verification_status: newStatus as TutorVerificationStatus }
-            : t
+          t.tutor_id === activeTutor.tutor_id ? updatedTutor : t
         )
       );
 
-      setActiveTutor({
-        ...activeTutor,
-        verification_status: newStatus as TutorVerificationStatus,
-      });
-
+      setActiveTutor(updatedTutor);
       setVerifyModalAction(null);
       setActionReason("");
+      loadTutors();
     } catch (err: any) {
       setVerifyError(err.message || "Failed to update verification status.");
+    } finally {
+      setIsSubmittingVerify(false);
     }
   };
 
   const filteredTutors = tutors.filter((t) => {
+    if (!showArchived && t.archived) return false;
+
+    // 1. Verification status filter
     if (selectedVerification !== "ALL" && t.verification_status !== selectedVerification) {
       return false;
     }
-    if (selectedSubject !== "ALL" && !t.subjects?.includes(selectedSubject)) {
-      return false;
+
+    // 2. Locality filter
+    if (selectedLocality !== "ALL") {
+      const targetLoc = selectedLocality.toLowerCase();
+      const tutorLocs = (t.localities || "").toLowerCase();
+      const currentLoc = (t.current_locality || "").toLowerCase();
+      if (!tutorLocs.includes(targetLoc) && !currentLoc.includes(targetLoc)) {
+        return false;
+      }
     }
+
+    // 3. Subject filter with intelligent "All Subjects" support
+    if (selectedSubject !== "ALL") {
+      const tutorSubjs = (t.subjects || "").toUpperCase();
+      const isAllSubjectsTutor =
+        tutorSubjs.includes("ALL_SUBJECTS") ||
+        tutorSubjs.includes("ALL SUBJECTS") ||
+        tutorSubjs.includes("ALL") ||
+        (t.subjects?.split("|").length || 0) >= 4;
+
+      if (selectedSubject === "ALL_SUBJECTS") {
+        if (!isAllSubjectsTutor) return false;
+      } else {
+        // Teacher teaches selected subject OR teaches "ALL_SUBJECTS" (very common for Class 1-5 primary teachers)
+        const hasSpecific = tutorSubjs.includes(selectedSubject.toUpperCase());
+        if (!hasSpecific && !isAllSubjectsTutor) {
+          return false;
+        }
+      }
+    }
+
+    // 4. Class filter with intelligent "1 to 5 / All Classes" support
+    if (selectedClass !== "ALL") {
+      const tutorClasses = (t.classes || "").toUpperCase();
+      const isAllClassesTutor = tutorClasses.includes("ALL") || tutorClasses.includes("CLASS_ALL");
+
+      if (selectedClass === "CLASS_1_TO_5") {
+        const primaryRegex = /(CLASS_[1-5]|1_TO_5|PRIMARY)/;
+        const matchesPrimary = primaryRegex.test(tutorClasses) || isAllClassesTutor;
+        if (!matchesPrimary) return false;
+      } else if (selectedClass === "CLASS_6_TO_8") {
+        const middleRegex = /(CLASS_[6-8]|6_TO_8|MIDDLE)/;
+        const matchesMiddle = middleRegex.test(tutorClasses) || isAllClassesTutor;
+        if (!matchesMiddle) return false;
+      } else if (selectedClass === "CLASS_9_TO_10") {
+        const highRegex = /(CLASS_9|CLASS_10|9_TO_10|SECONDARY)/;
+        const matchesHigh = highRegex.test(tutorClasses) || isAllClassesTutor;
+        if (!matchesHigh) return false;
+      } else if (selectedClass === "CLASS_11_TO_12") {
+        const seniorRegex = /(CLASS_11|CLASS_12|11_TO_12|SENIOR)/;
+        const matchesSenior = seniorRegex.test(tutorClasses) || isAllClassesTutor;
+        if (!matchesSenior) return false;
+      } else {
+        // Individual class like CLASS_5
+        const num = selectedClass.replace("CLASS_", "");
+        const isPrimaryClass = ["1", "2", "3", "4", "5"].includes(num);
+        const matchesClass =
+          tutorClasses.includes(selectedClass) ||
+          (isPrimaryClass && (tutorClasses.includes("1_TO_5") || tutorClasses.includes("PRIMARY"))) ||
+          isAllClassesTutor;
+        if (!matchesClass) return false;
+      }
+    }
+
+    // 5. Search query (searches across name, phone, ID, city, locality, subjects, classes)
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase();
-      const matchName = t.full_name?.toLowerCase().includes(q);
-      const matchPhone = t.phone?.includes(q);
-      const matchId = t.tutor_id?.toLowerCase().includes(q);
-      const matchCity = t.current_city?.toLowerCase().includes(q);
-      return matchName || matchPhone || matchId || matchCity;
+      const matchName = (t.full_name || "").toLowerCase().includes(q);
+      const matchPhone = (t.phone || "").includes(q);
+      const matchId = (t.tutor_id || "").toLowerCase().includes(q);
+      const matchCity = (t.current_city || "").toLowerCase().includes(q);
+      const matchLocality = (t.current_locality || "").toLowerCase().includes(q) || (t.localities || "").toLowerCase().includes(q);
+      const matchSubjects = (t.subjects || "").toLowerCase().includes(q);
+      const matchClasses = (t.classes || "").toLowerCase().includes(q);
+      return matchName || matchPhone || matchId || matchCity || matchLocality || matchSubjects || matchClasses;
     }
+
     return true;
   });
 
@@ -311,59 +418,130 @@ export default function TutorsPage() {
         </Link>
       </div>
 
-      {/* Filters */}
-      <div className="bg-white p-4 rounded-card border border-gray-200 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-4">
-        <div className="flex flex-wrap items-center gap-3">
-          <SearchInput
-            placeholder="Search tutor name, phone, ID..."
-            value={searchQuery}
-            onChange={setSearchQuery}
-            className="w-full sm:w-64"
-          />
+      {/* Enhanced Multi-Criteria Filters Bar */}
+      <div className="bg-white p-4 rounded-card border border-gray-200 shadow-sm space-y-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-5 gap-2.5">
+          {/* 1. Text Search */}
+          <div className="md:col-span-1">
+            <SearchInput
+              placeholder="Search name, phone, ID, area..."
+              value={searchQuery}
+              onChange={setSearchQuery}
+              className="w-full"
+            />
+          </div>
 
-          <select
-            className="h-9 px-3 text-xs bg-gray-50 border border-gray-200 rounded-lg text-gray-700 focus:outline-none focus:ring-1 focus:ring-blue-500"
-            value={selectedVerification}
-            onChange={(e) => setSelectedVerification(e.target.value)}
-          >
-            <option value="ALL">All Verification Statuses</option>
-            {TUTOR_VERIFICATION_STATUSES.map((st) => (
-              <option key={st} value={st}>
-                {st.replace("_", " ")}
-              </option>
-            ))}
-          </select>
+          {/* 2. Class Filter */}
+          <div>
+            <select
+              className="w-full h-9 px-2.5 text-xs bg-gray-50 border border-gray-200 rounded-lg text-gray-800 focus:outline-none focus:ring-1 focus:ring-blue-500 font-medium"
+              value={selectedClass}
+              onChange={(e) => setSelectedClass(e.target.value)}
+            >
+              <option value="ALL">All Classes / Grades</option>
+              <option value="CLASS_1_TO_5">★ Class 1 to 5 (Primary - All Subjects)</option>
+              <option value="CLASS_6_TO_8">Class 6 to 8 (Middle)</option>
+              <option value="CLASS_9_TO_10">Class 9 & 10 (High School)</option>
+              <option value="CLASS_11_TO_12">Class 11 & 12 (Senior Secondary)</option>
+              <option disabled>──────────</option>
+              {Array.from({ length: 12 }, (_, i) => `CLASS_${i + 1}`).map((cls) => (
+                <option key={cls} value={cls}>
+                  Class {cls.replace("CLASS_", "")}
+                </option>
+              ))}
+            </select>
+          </div>
 
-          <select
-            className="h-9 px-3 text-xs bg-gray-50 border border-gray-200 rounded-lg text-gray-700 focus:outline-none focus:ring-1 focus:ring-blue-500"
-            value={selectedSubject}
-            onChange={(e) => setSelectedSubject(e.target.value)}
-          >
-            <option value="ALL">All Subjects</option>
-            {[
-              "MATHEMATICS", "PHYSICS", "CHEMISTRY", "BIOLOGY",
-              "ENGLISH", "HINDI", "SCIENCE", "SOCIAL_SCIENCE", "COMPUTER", "ACCOUNTANCY"
-            ].map((s) => (
-              <option key={s} value={s}>
-                {s.replace("_", " ")}
-              </option>
-            ))}
-          </select>
+          {/* 3. Subject Filter */}
+          <div>
+            <select
+              className="w-full h-9 px-2.5 text-xs bg-gray-50 border border-gray-200 rounded-lg text-gray-800 focus:outline-none focus:ring-1 focus:ring-blue-500 font-medium"
+              value={selectedSubject}
+              onChange={(e) => setSelectedSubject(e.target.value)}
+            >
+              <option value="ALL">All Subjects</option>
+              <option value="ALL_SUBJECTS">★ All Subjects (Primary / General)</option>
+              <option disabled>──────────</option>
+              {[
+                "MATHEMATICS", "PHYSICS", "CHEMISTRY", "BIOLOGY",
+                "SCIENCE", "ENGLISH", "HINDI", "SOCIAL_SCIENCE",
+                "COMPUTER", "ACCOUNTANCY", "ECONOMICS", "BUSINESS_STUDIES",
+                "SANSKRIT", "EVS"
+              ].map((s) => (
+                <option key={s} value={s}>
+                  {s.replace("_", " ")}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* 4. Location / Locality Filter */}
+          <div>
+            <select
+              className="w-full h-9 px-2.5 text-xs bg-gray-50 border border-gray-200 rounded-lg text-gray-800 focus:outline-none focus:ring-1 focus:ring-blue-500 font-medium"
+              value={selectedLocality}
+              onChange={(e) => setSelectedLocality(e.target.value)}
+            >
+              <option value="ALL">All Localities / Areas</option>
+              {allLocalities.map((loc: string) => (
+                <option key={loc} value={loc}>
+                  {loc}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* 5. Verification Status Filter */}
+          <div>
+            <select
+              className="w-full h-9 px-2.5 text-xs bg-gray-50 border border-gray-200 rounded-lg text-gray-800 focus:outline-none focus:ring-1 focus:ring-blue-500 font-medium"
+              value={selectedVerification}
+              onChange={(e) => setSelectedVerification(e.target.value)}
+            >
+              <option value="ALL">All Verification Statuses</option>
+              {TUTOR_VERIFICATION_STATUSES.map((st) => (
+                <option key={st} value={st}>
+                  {st.replace("_", " ")}
+                </option>
+              ))}
+            </select>
+          </div>
         </div>
 
-        <div className="flex items-center gap-4 text-xs text-gray-500">
-          <label className="flex items-center gap-1.5 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={showArchived}
-              onChange={(e) => setShowArchived(e.target.checked)}
-              className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-            />
-            <span>Show Archived</span>
-          </label>
-          <span className="font-mono text-gray-700 font-medium">
-            {filteredTutors.length} tutors
-          </span>
+        {/* Filter Summary & Active Pills */}
+        <div className="flex flex-wrap items-center justify-between gap-3 text-xs pt-1 border-t border-gray-100">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="font-mono text-gray-700 font-bold">
+              {filteredTutors.length} {filteredTutors.length === 1 ? "tutor matches" : "tutors match"}
+            </span>
+            {(selectedClass !== "ALL" || selectedSubject !== "ALL" || selectedLocality !== "ALL" || selectedVerification !== "ALL" || searchQuery) && (
+              <button
+                type="button"
+                onClick={() => {
+                  setSelectedClass("ALL");
+                  setSelectedSubject("ALL");
+                  setSelectedLocality("ALL");
+                  setSelectedVerification("ALL");
+                  setSearchQuery("");
+                }}
+                className="text-blue-600 hover:text-blue-800 font-semibold text-[11px] underline ml-2"
+              >
+                Clear all filters
+              </button>
+            )}
+          </div>
+
+          <div className="flex items-center gap-4 text-gray-500">
+            <label className="flex items-center gap-1.5 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={showArchived}
+                onChange={(e) => setShowArchived(e.target.checked)}
+                className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+              />
+              <span>Show Archived</span>
+            </label>
+          </div>
         </div>
       </div>
 
@@ -396,7 +574,7 @@ export default function TutorsPage() {
                       <div className="flex items-center gap-2.5">
                         {isImageUrl(t.photo_file_id) ? (
                           <img
-                            src={t.photo_file_id}
+                            src={getDocViewUrl(t.photo_file_id, t.full_name, "photo")}
                             alt={t.full_name}
                             className="w-8 h-8 rounded-full object-cover border border-gray-200 shrink-0 shadow-2xs"
                           />
@@ -412,7 +590,18 @@ export default function TutorsPage() {
                       </div>
                     </td>
                     <td className="py-3.5 px-4">
-                      <div className="font-mono text-gray-900">{t.phone}</div>
+                      <div className="flex items-center gap-1.5 font-mono text-gray-900">
+                        <span>{t.phone}</span>
+                        {t.phone && (
+                          <a
+                            href={`tel:${t.phone}`}
+                            className="p-1 text-blue-600 hover:bg-blue-50 rounded"
+                            title={`Call ${t.phone}`}
+                          >
+                            <Phone className="w-3.5 h-3.5" />
+                          </a>
+                        )}
+                      </div>
                       <div className="text-[11px] text-gray-400">{t.current_city}</div>
                     </td>
                     <td className="py-3.5 px-4">
@@ -439,6 +628,53 @@ export default function TutorsPage() {
                     </td>
                     <td className="py-3.5 px-4 text-right">
                       <div className="inline-flex items-center gap-1.5">
+                        {/* Quick Direct Verify / Reject on row */}
+                        {t.verification_status !== "VERIFIED" ? (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setActiveTutor(t);
+                                setVerifyModalAction("VERIFY");
+                                setActionReason("");
+                              }}
+                              className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-semibold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 rounded"
+                              title="Verify Tutor"
+                            >
+                              <ShieldCheck className="w-3.5 h-3.5" />
+                              <span>Verify</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setActiveTutor(t);
+                                setVerifyModalAction("REJECT");
+                                setActionReason("");
+                              }}
+                              className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-semibold text-amber-700 bg-amber-50 hover:bg-amber-100 border border-amber-200 rounded"
+                              title="Reject Tutor"
+                            >
+                              <span>Reject</span>
+                            </button>
+                          </>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 bg-emerald-50 rounded">
+                            <CheckCircle2 className="w-3 h-3" /> Verified
+                          </span>
+                        )}
+
+                        {/* Direct Call Button */}
+                        {t.phone && (
+                          <a
+                            href={`tel:${t.phone}`}
+                            className="p-1.5 text-blue-600 hover:bg-blue-50 rounded"
+                            title={`Call ${t.full_name} (${t.phone})`}
+                          >
+                            <Phone className="w-4 h-4" />
+                          </a>
+                        )}
+
+                        {/* WhatsApp Button */}
                         {t.phone && (
                           <a
                             href={`https://wa.me/${t.phone.replace(/[^0-9]/g, "")}?text=${encodeURIComponent(
@@ -452,6 +688,29 @@ export default function TutorsPage() {
                             <MessageSquare className="w-4 h-4" />
                           </a>
                         )}
+
+                        {/* Quick View Aadhaar / Docs Button */}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setActiveTutor(t);
+                            const docUrl = getDocViewUrl(
+                              t.id_proof_file_id || t.photo_file_id || "",
+                              t.full_name,
+                              t.id_proof_file_id ? "aadhaar" : "photo"
+                            );
+                            if (docUrl) {
+                              setLightboxImage({
+                                url: docUrl,
+                                title: `${t.full_name} - ${t.id_proof_file_id ? "Aadhaar Card" : "Profile Photo"}`,
+                              });
+                            }
+                          }}
+                          className="p-1.5 text-indigo-600 hover:bg-indigo-50 rounded"
+                          title="View Aadhaar & Profile Photo"
+                        >
+                          <ShieldCheck className="w-4 h-4" />
+                        </button>
 
                         <button
                           type="button"
@@ -627,13 +886,13 @@ export default function TutorsPage() {
                           className="relative group cursor-pointer shrink-0"
                           onClick={() =>
                             setLightboxImage({
-                              url: activeTutor.photo_file_id,
+                              url: getDocViewUrl(activeTutor.photo_file_id, activeTutor.full_name, "photo"),
                               title: `${activeTutor.full_name} - Profile Photo`,
                             })
                           }
                         >
                           <img
-                            src={activeTutor.photo_file_id}
+                            src={getDocViewUrl(activeTutor.photo_file_id, activeTutor.full_name, "photo")}
                             alt="Profile"
                             className="w-14 h-14 rounded-lg object-cover border border-gray-300 group-hover:opacity-90 shadow-2xs"
                           />
@@ -669,17 +928,18 @@ export default function TutorsPage() {
                           type="button"
                           onClick={() =>
                             setLightboxImage({
-                              url: activeTutor.photo_file_id,
+                              url: getDocViewUrl(activeTutor.photo_file_id, activeTutor.full_name, "photo"),
                               title: `${activeTutor.full_name} - Profile Photo`,
                             })
                           }
-                          className="p-1.5 text-gray-600 hover:text-blue-600 hover:bg-blue-50 rounded-lg text-xs font-medium border border-gray-200"
+                          className="px-2 py-1.5 text-blue-700 bg-blue-50 hover:bg-blue-100 rounded-lg text-xs font-semibold border border-blue-200 inline-flex items-center gap-1"
                           title="View Full Size"
                         >
-                          <ZoomIn className="w-3.5 h-3.5" />
+                          <Eye className="w-3.5 h-3.5" />
+                          <span>View</span>
                         </button>
                       )}
-                      <label className="cursor-pointer inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold rounded-lg bg-blue-50 text-blue-700 hover:bg-blue-100 border border-blue-200 transition-colors">
+                      <label className="cursor-pointer inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold rounded-lg bg-gray-50 text-gray-700 hover:bg-gray-100 border border-gray-200 transition-colors">
                         <UploadCloud className="w-3.5 h-3.5" />
                         <span>{isImageUrl(activeTutor.photo_file_id) ? "Change" : "Upload"}</span>
                         <input
@@ -703,13 +963,13 @@ export default function TutorsPage() {
                           className="relative group cursor-pointer shrink-0"
                           onClick={() =>
                             setLightboxImage({
-                              url: activeTutor.id_proof_file_id || "",
+                              url: getDocViewUrl(activeTutor.id_proof_file_id, activeTutor.full_name, "aadhaar"),
                               title: `${activeTutor.full_name} - Aadhaar (Front Side)`,
                             })
                           }
                         >
                           <img
-                            src={activeTutor.id_proof_file_id}
+                            src={getDocViewUrl(activeTutor.id_proof_file_id, activeTutor.full_name, "aadhaar")}
                             alt="Aadhaar Front"
                             className="w-14 h-14 rounded-lg object-cover border border-gray-300 group-hover:opacity-90 shadow-2xs"
                           />
@@ -745,17 +1005,18 @@ export default function TutorsPage() {
                           type="button"
                           onClick={() =>
                             setLightboxImage({
-                              url: activeTutor.id_proof_file_id || "",
+                              url: getDocViewUrl(activeTutor.id_proof_file_id, activeTutor.full_name, "aadhaar"),
                               title: `${activeTutor.full_name} - Aadhaar (Front Side)`,
                             })
                           }
-                          className="p-1.5 text-gray-600 hover:text-blue-600 hover:bg-blue-50 rounded-lg text-xs font-medium border border-gray-200"
+                          className="px-2 py-1.5 text-blue-700 bg-blue-50 hover:bg-blue-100 rounded-lg text-xs font-semibold border border-blue-200 inline-flex items-center gap-1"
                           title="View Full Size"
                         >
-                          <ZoomIn className="w-3.5 h-3.5" />
+                          <Eye className="w-3.5 h-3.5" />
+                          <span>View Aadhaar</span>
                         </button>
                       )}
-                      <label className="cursor-pointer inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold rounded-lg bg-blue-50 text-blue-700 hover:bg-blue-100 border border-blue-200 transition-colors">
+                      <label className="cursor-pointer inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold rounded-lg bg-gray-50 text-gray-700 hover:bg-gray-100 border border-gray-200 transition-colors">
                         <UploadCloud className="w-3.5 h-3.5" />
                         <span>{isImageUrl(activeTutor.id_proof_file_id) ? "Replace" : "Upload"}</span>
                         <input
@@ -779,13 +1040,13 @@ export default function TutorsPage() {
                           className="relative group cursor-pointer shrink-0"
                           onClick={() =>
                             setLightboxImage({
-                              url: activeTutor.address_proof_file_id || "",
+                              url: getDocViewUrl(activeTutor.address_proof_file_id, activeTutor.full_name, "aadhaar_back"),
                               title: `${activeTutor.full_name} - Aadhaar (Back / Address)`,
                             })
                           }
                         >
                           <img
-                            src={activeTutor.address_proof_file_id}
+                            src={getDocViewUrl(activeTutor.address_proof_file_id, activeTutor.full_name, "aadhaar_back")}
                             alt="Aadhaar Back"
                             className="w-14 h-14 rounded-lg object-cover border border-gray-300 group-hover:opacity-90 shadow-2xs"
                           />
@@ -821,17 +1082,18 @@ export default function TutorsPage() {
                           type="button"
                           onClick={() =>
                             setLightboxImage({
-                              url: activeTutor.address_proof_file_id || "",
+                              url: getDocViewUrl(activeTutor.address_proof_file_id, activeTutor.full_name, "aadhaar_back"),
                               title: `${activeTutor.full_name} - Aadhaar (Back / Address)`,
                             })
                           }
-                          className="p-1.5 text-gray-600 hover:text-blue-600 hover:bg-blue-50 rounded-lg text-xs font-medium border border-gray-200"
+                          className="px-2 py-1.5 text-blue-700 bg-blue-50 hover:bg-blue-100 rounded-lg text-xs font-semibold border border-blue-200 inline-flex items-center gap-1"
                           title="View Full Size"
                         >
-                          <ZoomIn className="w-3.5 h-3.5" />
+                          <Eye className="w-3.5 h-3.5" />
+                          <span>View Back</span>
                         </button>
                       )}
-                      <label className="cursor-pointer inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold rounded-lg bg-blue-50 text-blue-700 hover:bg-blue-100 border border-blue-200 transition-colors">
+                      <label className="cursor-pointer inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold rounded-lg bg-gray-50 text-gray-700 hover:bg-gray-100 border border-gray-200 transition-colors">
                         <UploadCloud className="w-3.5 h-3.5" />
                         <span>{isImageUrl(activeTutor.address_proof_file_id) ? "Replace" : "Upload"}</span>
                         <input
@@ -853,7 +1115,33 @@ export default function TutorsPage() {
               <div className="grid grid-cols-2 gap-4 text-xs bg-gray-50 p-4 rounded-lg border border-gray-100">
                 <div>
                   <span className="text-gray-400 block mb-0.5">Mobile Phone</span>
-                  <span className="font-mono font-semibold text-gray-900">{activeTutor.phone}</span>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="font-mono font-semibold text-gray-900">{activeTutor.phone}</span>
+                    {activeTutor.phone && (
+                      <div className="flex items-center gap-1">
+                        <a
+                          href={`tel:${activeTutor.phone}`}
+                          className="px-2 py-0.5 rounded bg-blue-50 text-blue-700 hover:bg-blue-100 border border-blue-200 inline-flex items-center gap-1 text-[11px] font-semibold"
+                          title="Call Tutor"
+                        >
+                          <Phone className="w-3 h-3" />
+                          <span>Call</span>
+                        </a>
+                        <a
+                          href={`https://wa.me/${activeTutor.phone.replace(/[^0-9]/g, "")}?text=${encodeURIComponent(
+                            `Hello ${activeTutor.full_name}, this is from Tuition Bureau.`
+                          )}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border border-emerald-200 inline-flex items-center gap-1 text-[11px] font-semibold"
+                          title="WhatsApp Tutor"
+                        >
+                          <MessageSquare className="w-3 h-3" />
+                          <span>WhatsApp</span>
+                        </a>
+                      </div>
+                    )}
+                  </div>
                 </div>
                 <div>
                   <span className="text-gray-400 block mb-0.5">Location</span>
@@ -994,12 +1282,11 @@ export default function TutorsPage() {
             {(verifyModalAction === "REJECT" || verifyModalAction === "BLACKLIST") && (
               <div>
                 <label className="block text-xs font-medium text-gray-700 mb-1">
-                  Reason for {verifyModalAction} *
+                  Reason for {verifyModalAction} (Optional)
                 </label>
                 <textarea
                   rows={3}
-                  required
-                  placeholder="e.g. Mismatched Aadhaar number or failed document inspection..."
+                  placeholder={`Reason for ${verifyModalAction.toLowerCase()}ing this tutor...`}
                   value={actionReason}
                   onChange={(e) => setActionReason(e.target.value)}
                   className="w-full text-xs p-2.5 rounded border border-gray-300 text-gray-900 focus:ring-1 focus:ring-blue-500"
@@ -1012,6 +1299,7 @@ export default function TutorsPage() {
                 type="button"
                 variant="outline"
                 size="sm"
+                disabled={isSubmittingVerify}
                 onClick={() => setVerifyModalAction(null)}
               >
                 Cancel
@@ -1019,6 +1307,8 @@ export default function TutorsPage() {
               <Button
                 type="button"
                 size="sm"
+                isLoading={isSubmittingVerify}
+                disabled={isSubmittingVerify}
                 variant={verifyModalAction === "BLACKLIST" ? "danger" : "primary"}
                 onClick={handleVerificationSubmit}
               >

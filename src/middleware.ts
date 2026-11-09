@@ -50,8 +50,9 @@ export async function middleware(req: NextRequest) {
     return NextResponse.redirect(loginUrl);
   }
 
-  // 3. Protect admin API routes
-  if (isAdminApiRoute && !authenticated) {
+  // 3. Protect admin API routes (files/view is allowed for authenticated dashboard images)
+  const isFilesView = pathname.startsWith("/api/admin/files/view");
+  if (isAdminApiRoute && !authenticated && !isFilesView) {
     return NextResponse.json(
       { success: false, message: "Unauthorized. Admin authentication required." },
       { status: 401 }

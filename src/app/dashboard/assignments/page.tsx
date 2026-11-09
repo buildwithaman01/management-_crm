@@ -27,6 +27,11 @@ import {
   IndianRupee,
   Layers,
   ChevronRight,
+  RotateCcw,
+  Phone,
+  ExternalLink,
+  ShieldCheck,
+  GraduationCap,
 } from "lucide-react";
 import { formatDate, formatCurrency, cleanPhoneNumber } from "@/lib/utils";
 import { Assignment, Student, Tutor } from "@/types/entities";
@@ -73,6 +78,10 @@ function AssignmentsPageContent() {
   const [activeDemoAssignment, setActiveDemoAssignment] = useState<EnrichedAssignment | null>(null);
   const [activeDetailAssignment, setActiveDetailAssignment] = useState<EnrichedAssignment | null>(null);
 
+  // Profile slide-over drawers for clicking Tutor or Student anywhere in assignments
+  const [selectedTutorProfile, setSelectedTutorProfile] = useState<Tutor | null>(null);
+  const [selectedStudentProfile, setSelectedStudentProfile] = useState<Student | null>(null);
+
   // Create Assignment Form state
   const [createStudentId, setCreateStudentId] = useState("");
   const [createTutorId, setCreateTutorId] = useState("");
@@ -97,6 +106,8 @@ function AssignmentsPageContent() {
   // Demo Scheduling Form state
   const [demoDateTime, setDemoDateTime] = useState("");
   const [demoStatusVal, setDemoStatusVal] = useState<DemoStatus>("SCHEDULED");
+  const [demoOutcomeStatus, setDemoOutcomeStatus] = useState<AssignmentStatus>("DEMO_SCHEDULED");
+  const [demoAgreedFee, setDemoAgreedFee] = useState<string>("");
   const [demoSubmitting, setDemoSubmitting] = useState(false);
   const [demoError, setDemoError] = useState<string | null>(null);
 
@@ -290,7 +301,14 @@ function AssignmentsPageContent() {
   // Open Transition Modal
   const openTransitionModal = (assignment: EnrichedAssignment) => {
     setActiveTransitionAssignment(assignment);
-    const allowed = ALLOWED_ASSIGNMENT_TRANSITIONS[assignment.assignment_status] || [];
+    const standardAllowed = ALLOWED_ASSIGNMENT_TRANSITIONS[assignment.assignment_status] || [];
+    const isTerminal = assignment.assignment_status === "CANCELLED" || assignment.assignment_status === "REJECTED";
+    const allowed = standardAllowed.length > 0
+      ? standardAllowed
+      : isTerminal
+        ? (["SHORTLISTED", "CONTACTED", "ACCEPTED"] as AssignmentStatus[])
+        : [];
+
     setTargetStatus(allowed.length > 0 ? allowed[0] : "");
     setTransitionDemoAt(assignment.demo_at || "");
     setTransitionStartDate(assignment.start_date || new Date().toISOString().slice(0, 10));
@@ -309,6 +327,10 @@ function AssignmentsPageContent() {
     setTransitionSubmitting(true);
 
     try {
+      const isReopening =
+        activeTransitionAssignment.assignment_status === "CANCELLED" ||
+        activeTransitionAssignment.assignment_status === "REJECTED";
+
       const res = await fetch(`/api/admin/assignments/${activeTransitionAssignment.assignment_id}/status`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
@@ -320,6 +342,7 @@ function AssignmentsPageContent() {
           agreed_fee: transitionAgreedFee ? Number(transitionAgreedFee) : undefined,
           admin_notes: transitionNotes || undefined,
           expectedUpdatedAt: activeTransitionAssignment.updated_at,
+          reopen: isReopening,
         }),
       });
 
@@ -343,15 +366,23 @@ function AssignmentsPageContent() {
     setActiveDemoAssignment(assignment);
     setDemoDateTime(assignment.demo_at || "");
     setDemoStatusVal(assignment.demo_status || "SCHEDULED");
+    setDemoOutcomeStatus(
+      assignment.assignment_status === "ACCEPTED"
+        ? "ACCEPTED"
+        : assignment.demo_status === "COMPLETED"
+          ? "DEMO_COMPLETED"
+          : "DEMO_SCHEDULED"
+    );
+    setDemoAgreedFee(assignment.agreed_fee ? String(assignment.agreed_fee) : "");
     setDemoError(null);
   };
 
-  // Submit Demo Scheduling
+  // Submit Demo Scheduling & Outcome (Handles Scheduled, Completed, Accepted)
   const handleDemoSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!activeDemoAssignment) return;
 
-    if (!demoDateTime) {
+    if (!demoDateTime && demoOutcomeStatus !== "ACCEPTED") {
       setDemoError("Demo date and time is required");
       return;
     }
@@ -360,35 +391,159 @@ function AssignmentsPageContent() {
     setDemoSubmitting(true);
 
     try {
-      // Transition to DEMO_SCHEDULED or update demo details
-      const target =
-        activeDemoAssignment.assignment_status === "ACCEPTED" || activeDemoAssignment.assignment_status === "SHORTLISTED"
-          ? "DEMO_SCHEDULED"
-          : activeDemoAssignment.assignment_status;
+      let target: AssignmentStatus = demoOutcomeStatus;
+      let targetDemoStatus: DemoStatus = demoStatusVal;
+      let currentStatus: AssignmentStatus = activeDemoAssignment.assignment_status;
+      let currentUpdatedAt: string = activeDemoAssignment.updated_at;
+
+      // Pipeline advancement from SHORTLISTED -> CONTACTED -> ACCEPTED as required by Section 7.2
+      if (currentStatus === "SHORTLISTED") {
+        const r1 = await fetch(`/api/admin/assignments/${activeDemoAssignment.assignment_id}/status`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ status: "CONTACTED", expectedUpdatedAt: currentUpdatedAt }),
+        });
+        const d1 = await r1.json();
+        if (r1.ok) {
+          currentStatus = "CONTACTED";
+          currentUpdatedAt = d1.assignment?.updated_at || currentUpdatedAt;
+        }
+      }
+
+      if (currentStatus === "CONTACTED") {
+        const r2 = await fetch(`/api/admin/assignments/${activeDemoAssignment.assignment_id}/status`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            status: "ACCEPTED",
+            agreed_fee: demoAgreedFee ? Number(demoAgreedFee) : undefined,
+            expectedUpdatedAt: currentUpdatedAt,
+          }),
+        });
+        const d2 = await r2.json();
+        if (r2.ok) {
+          currentStatus = "ACCEPTED";
+          currentUpdatedAt = d2.assignment?.updated_at || currentUpdatedAt;
+        }
+      }
+
+      if (demoOutcomeStatus === "ACCEPTED") {
+        target = "ACCEPTED";
+        targetDemoStatus = "COMPLETED";
+        if (currentStatus === "ACCEPTED") {
+          showToast("Assignment marked as ACCEPTED!");
+          setActiveDemoAssignment(null);
+          loadAllData();
+          return;
+        }
+      } else if (demoStatusVal === "COMPLETED" && (target === "DEMO_SCHEDULED" || target === "DEMO_COMPLETED")) {
+        target = "DEMO_COMPLETED";
+      } else if (demoStatusVal === "CANCELLED") {
+        target = "CANCELLED";
+      }
+
+      // If assignment was in DEMO_SCHEDULED and we are completing demo
+      if (currentStatus === "DEMO_SCHEDULED" && (target === "DEMO_COMPLETED" || demoStatusVal === "COMPLETED")) {
+        target = "DEMO_COMPLETED";
+        targetDemoStatus = "COMPLETED";
+      }
 
       const res = await fetch(`/api/admin/assignments/${activeDemoAssignment.assignment_id}/status`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           status: target,
-          demo_at: demoDateTime,
-          demo_status: demoStatusVal,
-          expectedUpdatedAt: activeDemoAssignment.updated_at,
+          demo_at: demoDateTime || activeDemoAssignment.demo_at || new Date().toISOString(),
+          demo_status: targetDemoStatus,
+          agreed_fee: demoAgreedFee ? Number(demoAgreedFee) : undefined,
+          expectedUpdatedAt: currentUpdatedAt,
         }),
       });
 
       const json = await res.json();
       if (!res.ok) {
-        throw new Error(json.message || "Failed to schedule demo");
+        throw new Error(json.message || "Failed to update demo details");
       }
 
-      showToast("Demo class scheduled successfully!");
+      showToast(`Updated! Assignment is now ${STATUS_LABELS[target] || target}`);
       setActiveDemoAssignment(null);
       loadAllData();
     } catch (err: any) {
-      setDemoError(err.message || "Could not schedule demo");
+      setDemoError(err.message || "Could not save demo details");
     } finally {
       setDemoSubmitting(false);
+    }
+  };
+
+  // Quick 1-click Accept
+  const handleQuickAccept = async (assignment: EnrichedAssignment) => {
+    const feePrompt = window.prompt(
+      `Confirm Parent Accepted Tutor (${assignment.tutor_name || assignment.tutor_id}).\nEnter agreed monthly fee (or leave empty):`,
+      assignment.agreed_fee ? String(assignment.agreed_fee) : ""
+    );
+    if (feePrompt === null) return; // User cancelled prompt
+
+    try {
+      let currentStatus = assignment.assignment_status;
+      let currentUpdatedAt = assignment.updated_at;
+
+      if (currentStatus === "SHORTLISTED") {
+        const r1 = await fetch(`/api/admin/assignments/${assignment.assignment_id}/status`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ status: "CONTACTED", expectedUpdatedAt: currentUpdatedAt }),
+        });
+        const d1 = await r1.json();
+        currentStatus = "CONTACTED";
+        currentUpdatedAt = d1.assignment?.updated_at || currentUpdatedAt;
+      }
+
+      if (currentStatus === "CONTACTED") {
+        const r2 = await fetch(`/api/admin/assignments/${assignment.assignment_id}/status`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            status: "ACCEPTED",
+            agreed_fee: feePrompt ? Number(feePrompt) : undefined,
+            expectedUpdatedAt: currentUpdatedAt,
+          }),
+        });
+        const d2 = await r2.json();
+        if (!r2.ok) throw new Error(d2.message || "Failed to mark as accepted");
+        showToast("Tutor marked as ACCEPTED!");
+        loadAllData();
+        return;
+      }
+
+      if (currentStatus === "DEMO_SCHEDULED") {
+        const r1 = await fetch(`/api/admin/assignments/${assignment.assignment_id}/status`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ status: "DEMO_COMPLETED", expectedUpdatedAt: currentUpdatedAt }),
+        });
+        const d1 = await r1.json();
+        currentStatus = "DEMO_COMPLETED";
+        currentUpdatedAt = d1.assignment?.updated_at || currentUpdatedAt;
+      }
+
+      if (currentStatus === "DEMO_COMPLETED" || currentStatus === "ACCEPTED") {
+        const r2 = await fetch(`/api/admin/assignments/${assignment.assignment_id}/status`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            status: "ACTIVE",
+            agreed_fee: feePrompt ? Number(feePrompt) : undefined,
+            expectedUpdatedAt: currentUpdatedAt,
+          }),
+        });
+        const d2 = await r2.json();
+        if (!r2.ok) throw new Error(d2.message || "Failed to finalize assignment");
+        showToast("Tuition successfully finalized and ACTIVE!");
+        loadAllData();
+        return;
+      }
+    } catch (err: any) {
+      alert(err.message || "Could not accept assignment");
     }
   };
 
@@ -505,17 +660,15 @@ function AssignmentsPageContent() {
               <button
                 key={tab.id}
                 onClick={() => setSelectedStatusTab(tab.id)}
-                className={`whitespace-nowrap px-3 py-2 rounded-t-lg font-medium text-xs transition-colors flex items-center gap-1.5 ${
-                  active
+                className={`whitespace-nowrap px-3 py-2 rounded-t-lg font-medium text-xs transition-colors flex items-center gap-1.5 ${active
                     ? "border-b-2 border-indigo-600 text-indigo-600 bg-indigo-50/50"
                     : "text-gray-500 hover:text-gray-700 hover:bg-gray-50"
-                }`}
+                  }`}
               >
                 <span>{tab.label}</span>
                 <span
-                  className={`px-1.5 py-0.2 rounded-full text-[10px] ${
-                    active ? "bg-indigo-600 text-white" : "bg-gray-200 text-gray-600"
-                  }`}
+                  className={`px-1.5 py-0.2 rounded-full text-[10px] ${active ? "bg-indigo-600 text-white" : "bg-gray-200 text-gray-600"
+                    }`}
                 >
                   {count}
                 </span>
@@ -640,21 +793,89 @@ function AssignmentsPageContent() {
 
                       {/* Student */}
                       <td className="py-3 px-4">
-                        <div className="font-medium text-gray-900">
-                          {student?.student_name || a.student_name || a.student_id}
-                        </div>
-                        <div className="text-[11px] text-gray-500">
-                          {student?.class || a.student_class || "N/A"} • {student?.phone || a.student_phone || ""}
+                        <div className="flex items-center justify-between gap-2">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const s = student || students.find((item) => item.student_id === a.student_id);
+                              if (s) setSelectedStudentProfile(s);
+                            }}
+                            className="text-left group cursor-pointer"
+                            title="Click to view student profile, parents & history"
+                          >
+                            <div className="font-semibold text-gray-900 group-hover:text-blue-600 group-hover:underline flex items-center gap-1">
+                              <span>{student?.student_name || a.student_name || a.student_id}</span>
+                              <ExternalLink className="w-3 h-3 text-blue-500 opacity-70 group-hover:opacity-100" />
+                            </div>
+                            <div className="text-[11px] text-gray-500">
+                              {student?.class || a.student_class || "N/A"} • Parent: {student?.parent_name || a.parent_name || "N/A"}
+                            </div>
+                          </button>
+
+                          {(student?.phone || a.student_phone) && (
+                            <div className="flex items-center gap-1 shrink-0">
+                              <a
+                                href={`tel:${student?.phone || a.student_phone}`}
+                                className="p-1 text-blue-600 hover:bg-blue-50 rounded"
+                                title={`Call Student / Parent (${student?.phone || a.student_phone})`}
+                              >
+                                <Phone className="w-3.5 h-3.5" />
+                              </a>
+                              <a
+                                href={getWhatsAppLink(a, "PARENT")}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="p-1 text-emerald-600 hover:bg-emerald-50 rounded"
+                                title="WhatsApp Parent"
+                              >
+                                <MessageCircle className="w-3.5 h-3.5" />
+                              </a>
+                            </div>
+                          )}
                         </div>
                       </td>
 
                       {/* Tutor */}
                       <td className="py-3 px-4">
-                        <div className="font-medium text-gray-900">
-                          {tutor?.full_name || a.tutor_name || a.tutor_id}
-                        </div>
-                        <div className="text-[11px] text-gray-500">
-                          {tutor?.highest_qualification || "Tutor"} • {tutor?.phone || a.tutor_phone || ""}
+                        <div className="flex items-center justify-between gap-2">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const t = tutor || tutors.find((item) => item.tutor_id === a.tutor_id);
+                              if (t) setSelectedTutorProfile(t);
+                            }}
+                            className="text-left group cursor-pointer"
+                            title="Click to view tutor profile, Aadhaar & history"
+                          >
+                            <div className="font-semibold text-gray-900 group-hover:text-blue-600 group-hover:underline flex items-center gap-1">
+                              <span>{tutor?.full_name || a.tutor_name || a.tutor_id}</span>
+                              <ExternalLink className="w-3 h-3 text-blue-500 opacity-70 group-hover:opacity-100" />
+                            </div>
+                            <div className="text-[11px] text-gray-500">
+                              {tutor?.highest_qualification || "Tutor"} • {tutor?.current_locality || tutor?.current_city || "Patna"}
+                            </div>
+                          </button>
+
+                          {(tutor?.phone || a.tutor_phone) && (
+                            <div className="flex items-center gap-1 shrink-0">
+                              <a
+                                href={`tel:${tutor?.phone || a.tutor_phone}`}
+                                className="p-1 text-blue-600 hover:bg-blue-50 rounded"
+                                title={`Call Tutor (${tutor?.phone || a.tutor_phone})`}
+                              >
+                                <Phone className="w-3.5 h-3.5" />
+                              </a>
+                              <a
+                                href={getWhatsAppLink(a, "TUTOR")}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="p-1 text-emerald-600 hover:bg-emerald-50 rounded"
+                                title="WhatsApp Tutor"
+                              >
+                                <MessageCircle className="w-3.5 h-3.5" />
+                              </a>
+                            </div>
+                          )}
                         </div>
                       </td>
 
@@ -707,22 +928,48 @@ function AssignmentsPageContent() {
                       {/* Actions */}
                       <td className="py-3 px-4 text-right">
                         <div className="inline-flex items-center justify-end gap-1.5">
-                          {/* Update Status Button */}
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() => openTransitionModal(a)}
-                            disabled={isFinal}
-                            className={`h-7 px-2 text-[11px] ${
-                              isFinal ? "opacity-40 cursor-not-allowed" : "hover:border-indigo-400"
-                            }`}
-                            title={isFinal ? "Final state - no further moves" : "Change Status"}
-                          >
-                            Update
-                          </Button>
+                          {/* Update / Reopen Status Button */}
+                          {a.assignment_status === "CANCELLED" || a.assignment_status === "REJECTED" ? (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => openTransitionModal(a)}
+                              className="h-7 px-2 text-[11px] font-semibold text-amber-700 border-amber-300 hover:bg-amber-50"
+                              title="Reopen Assignment"
+                            >
+                              <RotateCcw className="w-3 h-3 mr-1" />
+                              Reopen
+                            </Button>
+                          ) : (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => openTransitionModal(a)}
+                              disabled={isFinal}
+                              className={`h-7 px-2 text-[11px] ${isFinal ? "opacity-40 cursor-not-allowed" : "hover:border-indigo-400"
+                                }`}
+                              title={isFinal ? "Final state - no further moves" : "Change Status"}
+                            >
+                              Update
+                            </Button>
+                          )}
+
+                          {/* Quick Accept Button */}
+                          {a.assignment_status !== "ACCEPTED" && a.assignment_status !== "ACTIVE" && !isFinal && (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => handleQuickAccept(a)}
+                              className="h-7 px-2 text-[11px] font-semibold text-emerald-700 border-emerald-300 hover:bg-emerald-50"
+                              title="Mark Parent Accepted Tutor"
+                            >
+                              <CheckCircle2 className="w-3 h-3 mr-1" />
+                              Accept
+                            </Button>
+                          )}
 
                           {/* Demo Scheduling Button */}
-                          {(!a.demo_at || a.demo_status === "SCHEDULED") && !isFinal && (
+                          {(!a.demo_at || a.demo_status === "SCHEDULED" || a.assignment_status === "SHORTLISTED" || a.assignment_status === "CONTACTED") && !isFinal && (
                             <Button
                               size="sm"
                               variant="outline"
@@ -965,24 +1212,44 @@ function AssignmentsPageContent() {
                 <StatusBadge status={activeTransitionAssignment.assignment_status} />
               </div>
 
+              {(activeTransitionAssignment.assignment_status === "CANCELLED" ||
+                activeTransitionAssignment.assignment_status === "REJECTED") && (
+                  <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-xs text-amber-800 flex items-start gap-2">
+                    <RotateCcw className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                    <div>
+                      <span className="font-semibold block">Reopen Assignment:</span>
+                      This assignment was marked as{" "}
+                      <strong>{STATUS_LABELS[activeTransitionAssignment.assignment_status]}</strong>. Select a target status below to restore and continue this assignment.
+                    </div>
+                  </div>
+                )}
+
               {/* Target Status Dropdown */}
               <div>
                 <label className="block text-xs font-semibold text-gray-700 mb-1">
-                  Allowed Target Status *
+                  {activeTransitionAssignment.assignment_status === "CANCELLED" ||
+                    activeTransitionAssignment.assignment_status === "REJECTED"
+                    ? "Target Reopen Status *"
+                    : "Allowed Target Status *"}
                 </label>
                 <select
                   required
                   value={targetStatus}
                   onChange={(e) => setTargetStatus(e.target.value as AssignmentStatus)}
-                  className="w-full text-xs h-9 px-3 rounded-lg border border-gray-300 bg-white text-gray-800 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                  className="w-full text-xs h-9 px-3 rounded-lg border border-gray-300 bg-white text-gray-800 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-medium"
                 >
-                  {(ALLOWED_ASSIGNMENT_TRANSITIONS[activeTransitionAssignment.assignment_status] || []).map(
-                    (status) => (
-                      <option key={status} value={status}>
-                        {STATUS_LABELS[status] || status}
-                      </option>
-                    )
-                  )}
+                  {((ALLOWED_ASSIGNMENT_TRANSITIONS[activeTransitionAssignment.assignment_status] || []).length > 0
+                    ? (ALLOWED_ASSIGNMENT_TRANSITIONS[activeTransitionAssignment.assignment_status] || [])
+                    : (["SHORTLISTED", "CONTACTED", "ACCEPTED"] as AssignmentStatus[])
+                  ).map((status) => (
+                    <option key={status} value={status}>
+                      {STATUS_LABELS[status] || status}{" "}
+                      {activeTransitionAssignment.assignment_status === "CANCELLED" ||
+                        activeTransitionAssignment.assignment_status === "REJECTED"
+                        ? "(Reopen)"
+                        : ""}
+                    </option>
+                  ))}
                 </select>
                 <p className="text-[10px] text-gray-400 mt-1">
                   Transitions follow Section 7.2 of the CRM Specification.
@@ -1128,22 +1395,75 @@ function AssignmentsPageContent() {
                 />
               </div>
 
-              <div>
-                <label className="block text-xs font-semibold text-gray-700 mb-1">
-                  Demo Status
-                </label>
-                <select
-                  value={demoStatusVal}
-                  onChange={(e) => setDemoStatusVal(e.target.value as DemoStatus)}
-                  className="w-full text-xs h-9 px-3 rounded-lg border border-gray-300 bg-white text-gray-800 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                >
-                  {DEMO_STATUSES.map((status) => (
-                    <option key={status} value={status}>
-                      {STATUS_LABELS[status] || status}
-                    </option>
-                  ))}
-                </select>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-semibold text-gray-700 mb-1">
+                    Demo Status
+                  </label>
+                  <select
+                    value={demoStatusVal}
+                    onChange={(e) => {
+                      const val = e.target.value as DemoStatus;
+                      setDemoStatusVal(val);
+                      if (val === "COMPLETED") {
+                        setDemoOutcomeStatus("DEMO_COMPLETED");
+                      } else if (val === "CANCELLED") {
+                        setDemoOutcomeStatus("CANCELLED");
+                      } else {
+                        setDemoOutcomeStatus("DEMO_SCHEDULED");
+                      }
+                    }}
+                    className="w-full text-xs h-9 px-3 rounded-lg border border-gray-300 bg-white text-gray-800 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                  >
+                    {DEMO_STATUSES.map((status) => (
+                      <option key={status} value={status}>
+                        {STATUS_LABELS[status] || status}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-gray-700 mb-1">
+                    Assignment Status Outcome
+                  </label>
+                  <select
+                    value={demoOutcomeStatus}
+                    onChange={(e) => {
+                      const st = e.target.value as AssignmentStatus;
+                      setDemoOutcomeStatus(st);
+                      if (st === "ACCEPTED" || st === "ACTIVE" || st === "DEMO_COMPLETED") {
+                        setDemoStatusVal("COMPLETED");
+                      }
+                    }}
+                    className="w-full text-xs h-9 px-3 rounded-lg border border-gray-300 bg-white text-gray-800 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-medium"
+                  >
+                    <option value="DEMO_SCHEDULED">Demo Scheduled</option>
+                    <option value="DEMO_COMPLETED">Demo Completed (Pending Decision)</option>
+                    <option value="ACCEPTED">★ ACCEPTED (Parent Accepted Tutor)</option>
+                    <option value="ACTIVE">ACTIVE (Finalized Regular Classes)</option>
+                    <option value="CANCELLED">CANCELLED</option>
+                  </select>
+                </div>
               </div>
+
+              {(demoOutcomeStatus === "ACCEPTED" || demoOutcomeStatus === "ACTIVE") && (
+                <div className="p-3 bg-emerald-50 rounded-lg border border-emerald-200">
+                  <label className="block text-xs font-semibold text-emerald-900 mb-1">
+                    Agreed Monthly Fee (₹ / month)
+                  </label>
+                  <Input
+                    type="number"
+                    placeholder="e.g. 4500"
+                    value={demoAgreedFee}
+                    onChange={(e) => setDemoAgreedFee(e.target.value)}
+                    className="text-xs h-9 bg-white"
+                  />
+                  <p className="text-[11px] text-emerald-700 mt-1">
+                    Saving as Accepted will automatically update the student lead status to Converted.
+                  </p>
+                </div>
+              )}
 
               <div className="pt-3 border-t border-gray-100 flex items-center justify-end gap-2">
                 <Button
@@ -1155,13 +1475,34 @@ function AssignmentsPageContent() {
                 >
                   Cancel
                 </Button>
+                {demoOutcomeStatus !== "ACCEPTED" && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() => {
+                      setDemoOutcomeStatus("ACCEPTED");
+                      setDemoStatusVal("COMPLETED");
+                    }}
+                    className="text-xs text-emerald-700 border-emerald-300 hover:bg-emerald-50"
+                  >
+                    Mark as Accepted
+                  </Button>
+                )}
                 <Button
                   type="submit"
                   size="sm"
                   disabled={demoSubmitting}
-                  className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs"
+                  className={`text-xs text-white ${demoOutcomeStatus === "ACCEPTED"
+                      ? "bg-emerald-600 hover:bg-emerald-700"
+                      : "bg-indigo-600 hover:bg-indigo-700"
+                    }`}
                 >
-                  {demoSubmitting ? "Saving..." : "Save Demo"}
+                  {demoSubmitting
+                    ? "Saving..."
+                    : demoOutcomeStatus === "ACCEPTED"
+                      ? "Save Accepted"
+                      : "Save Demo"}
                 </Button>
               </div>
             </form>
@@ -1208,39 +1549,59 @@ function AssignmentsPageContent() {
               )}
             </div>
 
-            {/* Student & Tutor Card */}
+            {/* Student & Tutor Card (Clickable to open profile) */}
             <div className="space-y-4">
-              <div className="border border-gray-200 rounded-xl p-3.5 space-y-1">
-                <span className="text-[10px] font-bold uppercase tracking-wider text-indigo-600">
-                  Student Lead
-                </span>
-                <div className="text-sm font-semibold text-gray-900">
-                  {students.find((s) => s.student_id === activeDetailAssignment.student_id)?.student_name ||
-                    activeDetailAssignment.student_id}
-                </div>
-                <div className="text-xs text-gray-500">
-                  Parent: {students.find((s) => s.student_id === activeDetailAssignment.student_id)?.parent_name || "N/A"}
-                </div>
-                <div className="text-xs text-gray-500">
-                  Class: {students.find((s) => s.student_id === activeDetailAssignment.student_id)?.class || "N/A"} • Phone: {students.find((s) => s.student_id === activeDetailAssignment.student_id)?.phone || "N/A"}
-                </div>
-              </div>
+              {(() => {
+                const sObj = students.find((s) => s.student_id === activeDetailAssignment.student_id);
+                const tObj = tutors.find((t) => t.tutor_id === activeDetailAssignment.tutor_id);
+                return (
+                  <>
+                    <div
+                      onClick={() => sObj && setSelectedStudentProfile(sObj)}
+                      className="border border-gray-200 hover:border-indigo-400 rounded-xl p-3.5 space-y-1 bg-white hover:bg-indigo-50/20 transition-all cursor-pointer group"
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="text-[10px] font-bold uppercase tracking-wider text-indigo-600 flex items-center gap-1">
+                          <GraduationCap className="w-3.5 h-3.5" />
+                          Student Lead (Click for Profile)
+                        </span>
+                        <ExternalLink className="w-3.5 h-3.5 text-indigo-400 group-hover:text-indigo-600" />
+                      </div>
+                      <div className="text-sm font-semibold text-gray-900 group-hover:text-indigo-700">
+                        {sObj?.student_name || activeDetailAssignment.student_id}
+                      </div>
+                      <div className="text-xs text-gray-500">
+                        Parent: {sObj?.parent_name || "N/A"} • Phone: {sObj?.phone || "N/A"}
+                      </div>
+                      <div className="text-xs text-gray-500">
+                        Class: {sObj?.class || "N/A"} • Locality: {sObj?.locality || "N/A"}
+                      </div>
+                    </div>
 
-              <div className="border border-gray-200 rounded-xl p-3.5 space-y-1">
-                <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-600">
-                  Assigned Tutor
-                </span>
-                <div className="text-sm font-semibold text-gray-900">
-                  {tutors.find((t) => t.tutor_id === activeDetailAssignment.tutor_id)?.full_name ||
-                    activeDetailAssignment.tutor_id}
-                </div>
-                <div className="text-xs text-gray-500">
-                  Qualification: {tutors.find((t) => t.tutor_id === activeDetailAssignment.tutor_id)?.highest_qualification || "N/A"}
-                </div>
-                <div className="text-xs text-gray-500">
-                  Phone: {tutors.find((t) => t.tutor_id === activeDetailAssignment.tutor_id)?.phone || "N/A"}
-                </div>
-              </div>
+                    <div
+                      onClick={() => tObj && setSelectedTutorProfile(tObj)}
+                      className="border border-gray-200 hover:border-emerald-400 rounded-xl p-3.5 space-y-1 bg-white hover:bg-emerald-50/20 transition-all cursor-pointer group"
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-600 flex items-center gap-1">
+                          <ShieldCheck className="w-3.5 h-3.5" />
+                          Assigned Tutor (Click for Profile)
+                        </span>
+                        <ExternalLink className="w-3.5 h-3.5 text-emerald-400 group-hover:text-emerald-600" />
+                      </div>
+                      <div className="text-sm font-semibold text-gray-900 group-hover:text-emerald-700">
+                        {tObj?.full_name || activeDetailAssignment.tutor_id}
+                      </div>
+                      <div className="text-xs text-gray-500">
+                        Qualification: {tObj?.highest_qualification || "N/A"} • Phone: {tObj?.phone || "N/A"}
+                      </div>
+                      <div className="text-xs text-gray-500">
+                        Status: {tObj?.verification_status || "PENDING"} • City: {tObj?.current_city || "Patna"}
+                      </div>
+                    </div>
+                  </>
+                );
+              })()}
             </div>
 
             {/* Subjects */}
@@ -1303,28 +1664,504 @@ function AssignmentsPageContent() {
                   setActiveDetailAssignment(null);
                   openTransitionModal(item);
                 }}
-                className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs"
+                className={`text-white text-xs ${activeDetailAssignment.assignment_status === "CANCELLED" ||
+                    activeDetailAssignment.assignment_status === "REJECTED"
+                    ? "bg-amber-600 hover:bg-amber-700"
+                    : "bg-indigo-600 hover:bg-indigo-700"
+                  }`}
               >
-                Change Assignment Status
+                {activeDetailAssignment.assignment_status === "CANCELLED" ||
+                  activeDetailAssignment.assignment_status === "REJECTED" ? (
+                  <>
+                    <RotateCcw className="w-3.5 h-3.5 mr-1.5 inline" />
+                    Reopen Assignment
+                  </>
+                ) : (
+                  "Change Assignment Status"
+                )}
               </Button>
-              <div className="flex gap-2">
-                <a
-                  href={getWhatsAppLink(activeDetailAssignment, "TUTOR")}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="flex-1 text-center py-2 rounded-lg border border-emerald-300 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 text-xs font-medium"
-                >
-                  WhatsApp Tutor
-                </a>
-                <a
-                  href={getWhatsAppLink(activeDetailAssignment, "PARENT")}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="flex-1 text-center py-2 rounded-lg border border-blue-300 bg-blue-50 text-blue-700 hover:bg-blue-100 text-xs font-medium"
-                >
-                  WhatsApp Parent
-                </a>
+              <div className="space-y-2 pt-2">
+                <div className="text-[11px] font-bold uppercase tracking-wider text-gray-500">
+                  Direct Tutor Communications
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  {(() => {
+                    const tObj = tutors.find((t) => t.tutor_id === activeDetailAssignment.tutor_id);
+                    const tPhone = tObj?.phone || activeDetailAssignment.tutor_phone;
+                    return (
+                      <>
+                        {tPhone ? (
+                          <a
+                            href={`tel:${tPhone}`}
+                            className="py-2 px-3 rounded-lg border border-indigo-300 bg-indigo-50 text-indigo-700 hover:bg-indigo-100 text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors"
+                          >
+                            <Phone className="w-3.5 h-3.5" /> Call Tutor
+                          </a>
+                        ) : (
+                          <span className="py-2 px-3 rounded-lg border border-gray-200 text-gray-400 text-xs text-center">
+                            No Phone
+                          </span>
+                        )}
+                        <a
+                          href={getWhatsAppLink(activeDetailAssignment, "TUTOR")}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="py-2 px-3 rounded-lg border border-emerald-300 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors"
+                        >
+                          <MessageCircle className="w-3.5 h-3.5" /> WhatsApp Tutor
+                        </a>
+                      </>
+                    );
+                  })()}
+                </div>
+
+                <div className="text-[11px] font-bold uppercase tracking-wider text-gray-500 pt-1">
+                  Direct Parent Communications
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  {(() => {
+                    const sObj = students.find((s) => s.student_id === activeDetailAssignment.student_id);
+                    const sPhone = sObj?.phone || activeDetailAssignment.student_phone;
+                    return (
+                      <>
+                        {sPhone ? (
+                          <a
+                            href={`tel:${sPhone}`}
+                            className="py-2 px-3 rounded-lg border border-blue-300 bg-blue-50 text-blue-700 hover:bg-blue-100 text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors"
+                          >
+                            <Phone className="w-3.5 h-3.5" /> Call Parent
+                          </a>
+                        ) : (
+                          <span className="py-2 px-3 rounded-lg border border-gray-200 text-gray-400 text-xs text-center">
+                            No Phone
+                          </span>
+                        )}
+                        <a
+                          href={getWhatsAppLink(activeDetailAssignment, "PARENT")}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="py-2 px-3 rounded-lg border border-blue-300 bg-blue-50 text-blue-700 hover:bg-blue-100 text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors"
+                        >
+                          <MessageCircle className="w-3.5 h-3.5" /> WhatsApp Parent
+                        </a>
+                      </>
+                    );
+                  })()}
+                </div>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* TUTOR PROFILE SLIDE-OVER DRAWER WITH ALL ASSOCIATED STUDENTS & PAST HISTORY */}
+      {selectedTutorProfile && (
+        <div className="fixed inset-0 z-60 flex items-center justify-end bg-black/50 animate-in fade-in">
+          <div
+            className="fixed inset-0 bg-transparent"
+            onClick={() => setSelectedTutorProfile(null)}
+          />
+          <div className="relative bg-white w-full max-w-lg h-full shadow-2xl border-l border-gray-200 flex flex-col p-6 space-y-6 overflow-y-auto z-10">
+            {/* Header */}
+            <div className="flex items-center justify-between pb-4 border-b border-gray-100">
+              <div className="flex items-center gap-3">
+                <div className="w-12 h-12 rounded-xl bg-emerald-100 text-emerald-800 font-bold text-lg flex items-center justify-center shrink-0 shadow-xs">
+                  {selectedTutorProfile.full_name?.slice(0, 1).toUpperCase() || "T"}
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-mono font-bold text-emerald-600">
+                      {selectedTutorProfile.tutor_id}
+                    </span>
+                    <StatusBadge status={selectedTutorProfile.verification_status} />
+                  </div>
+                  <h2 className="text-lg font-bold text-gray-900 leading-tight mt-0.5">
+                    {selectedTutorProfile.full_name}
+                  </h2>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSelectedTutorProfile(null)}
+                className="text-gray-400 hover:text-gray-600 p-1.5 rounded-lg hover:bg-gray-100 transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Direct Contact Bar (Call & WhatsApp) */}
+            <div className="p-3 bg-gradient-to-r from-emerald-50 to-teal-50 rounded-xl border border-emerald-200 space-y-2">
+              <div className="flex items-center justify-between text-xs font-semibold text-emerald-900">
+                <span>Teacher Direct Contact</span>
+                <span className="font-mono text-emerald-700">{selectedTutorProfile.phone}</span>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                {selectedTutorProfile.phone ? (
+                  <a
+                    href={`tel:${selectedTutorProfile.phone}`}
+                    className="py-2 px-3 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-xs flex items-center justify-center gap-1.5 shadow-xs transition-colors"
+                  >
+                    <Phone className="w-3.5 h-3.5" /> Call Teacher
+                  </a>
+                ) : null}
+                {selectedTutorProfile.phone ? (
+                  <a
+                    href={`https://wa.me/${selectedTutorProfile.phone.replace(/[^0-9]/g, "")}?text=${encodeURIComponent(
+                      `Hello ${selectedTutorProfile.full_name}, this is from Tuition Bureau regarding your teaching assignments.`
+                    )}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="py-2 px-3 rounded-lg border border-emerald-600 bg-white hover:bg-emerald-50 text-emerald-700 font-semibold text-xs flex items-center justify-center gap-1.5 shadow-xs transition-colors"
+                  >
+                    <MessageCircle className="w-3.5 h-3.5" /> WhatsApp
+                  </a>
+                ) : null}
+              </div>
+            </div>
+
+            {/* Academic & Teaching Details */}
+            <div className="grid grid-cols-2 gap-3 p-4 bg-gray-50 rounded-xl border border-gray-200 text-xs">
+              <div>
+                <span className="text-gray-400 block mb-0.5 font-medium">Highest Qualification</span>
+                <span className="font-semibold text-gray-900">{selectedTutorProfile.highest_qualification || "N/A"}</span>
+                {selectedTutorProfile.specialization && (
+                  <div className="text-[11px] text-gray-500">{selectedTutorProfile.specialization}</div>
+                )}
+              </div>
+              <div>
+                <span className="text-gray-400 block mb-0.5 font-medium">Experience</span>
+                <span className="font-semibold text-gray-900">{selectedTutorProfile.experience_years || 0} years</span>
+              </div>
+              <div>
+                <span className="text-gray-400 block mb-0.5 font-medium">Expected Fee</span>
+                <span className="font-semibold text-gray-900 font-mono">
+                  {formatCurrency(Number(selectedTutorProfile.expected_fee))}/mo
+                </span>
+              </div>
+              <div>
+                <span className="text-gray-400 block mb-0.5 font-medium">Teaching Mode</span>
+                <span className="font-semibold text-gray-900">{selectedTutorProfile.teaching_mode || "BOTH"}</span>
+              </div>
+              <div className="col-span-2">
+                <span className="text-gray-400 block mb-0.5 font-medium">Operating Localities</span>
+                <span className="font-medium text-gray-800">
+                  {selectedTutorProfile.localities ? selectedTutorProfile.localities.split("|").join(", ") : "All areas"}
+                </span>
+              </div>
+            </div>
+
+            {/* ASSOCIATED STUDENTS & ALL PAST / ACTIVE ASSIGNMENTS (History Preservation) */}
+            <div className="space-y-3">
+              <div className="flex items-center justify-between border-b border-gray-100 pb-2">
+                <div className="flex items-center gap-2">
+                  <GraduationCap className="w-4 h-4 text-indigo-600" />
+                  <h3 className="text-sm font-bold text-gray-900">
+                    Associated Students & History
+                  </h3>
+                </div>
+                {(() => {
+                  const tutorAssignments = assignments.filter((a) => a.tutor_id === selectedTutorProfile.tutor_id);
+                  return (
+                    <span className="text-xs px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 font-semibold border border-indigo-200">
+                      {tutorAssignments.length} {tutorAssignments.length === 1 ? "student" : "students"}
+                    </span>
+                  );
+                })()}
+              </div>
+
+              {(() => {
+                const tutorAssignments = assignments.filter((a) => a.tutor_id === selectedTutorProfile.tutor_id);
+                if (tutorAssignments.length === 0) {
+                  return (
+                    <div className="p-4 bg-gray-50 rounded-xl border border-gray-200 text-center text-xs text-gray-500">
+                      This teacher has not been assigned to any students yet.
+                    </div>
+                  );
+                }
+
+                return (
+                  <div className="space-y-2.5">
+                    {tutorAssignments.map((asg) => {
+                      const stu = students.find((s) => s.student_id === asg.student_id);
+                      return (
+                        <div
+                          key={asg.assignment_id}
+                          className="p-3 bg-white rounded-xl border border-gray-200 hover:border-indigo-300 hover:shadow-xs transition-all space-y-2"
+                        >
+                          <div className="flex items-center justify-between">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (stu) {
+                                  setSelectedTutorProfile(null);
+                                  setSelectedStudentProfile(stu);
+                                }
+                              }}
+                              className="font-bold text-xs text-indigo-600 hover:underline flex items-center gap-1 group text-left"
+                              title="Click to view this student profile"
+                            >
+                              <span>{stu?.student_name || asg.student_id}</span>
+                              <ExternalLink className="w-3 h-3 group-hover:translate-x-0.5 transition-transform" />
+                            </button>
+                            <StatusBadge status={asg.assignment_status} />
+                          </div>
+
+                          <div className="grid grid-cols-2 gap-2 text-[11px] text-gray-600">
+                            <div>
+                              <span className="text-gray-400">Class: </span>
+                              <span className="font-medium text-gray-800">{stu?.class?.replace("CLASS_", "Class ") || "N/A"}</span>
+                            </div>
+                            <div>
+                              <span className="text-gray-400">Fee: </span>
+                              <span className="font-mono font-medium text-gray-800">
+                                {asg.agreed_fee ? formatCurrency(Number(asg.agreed_fee)) : "—"}
+                              </span>
+                            </div>
+                            <div className="col-span-2">
+                              <span className="text-gray-400">Subjects: </span>
+                              <span className="font-medium text-gray-800">{asg.subjects.split("|").join(", ")}</span>
+                            </div>
+                          </div>
+
+                          {/* Quick call parent button */}
+                          {stu?.phone && (
+                            <div className="flex items-center justify-end gap-2 pt-1 border-t border-gray-100">
+                              <a
+                                href={`tel:${stu.phone}`}
+                                className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-blue-50 text-blue-700 hover:bg-blue-100 text-[10px] font-semibold"
+                              >
+                                <Phone className="w-3 h-3" /> Call Parent
+                              </a>
+                              <a
+                                href={`https://wa.me/${stu.phone.replace(/[^0-9]/g, "")}?text=${encodeURIComponent(
+                                  `Hello ${stu.parent_name}, this is regarding tuition with ${selectedTutorProfile.full_name}.`
+                                )}`}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 hover:bg-emerald-100 text-[10px] font-semibold"
+                              >
+                                <MessageCircle className="w-3 h-3" /> WhatsApp
+                              </a>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })()}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* STUDENT PROFILE SLIDE-OVER DRAWER WITH ALL ASSOCIATED TUTORS & TUITION HISTORY */}
+      {selectedStudentProfile && (
+        <div className="fixed inset-0 z-60 flex items-center justify-end bg-black/50 animate-in fade-in">
+          <div
+            className="fixed inset-0 bg-transparent"
+            onClick={() => setSelectedStudentProfile(null)}
+          />
+          <div className="relative bg-white w-full max-w-lg h-full shadow-2xl border-l border-gray-200 flex flex-col p-6 space-y-6 overflow-y-auto z-10">
+            {/* Header */}
+            <div className="flex items-center justify-between pb-4 border-b border-gray-100">
+              <div className="flex items-center gap-3">
+                <div className="w-12 h-12 rounded-xl bg-blue-100 text-blue-800 font-bold text-lg flex items-center justify-center shrink-0 shadow-xs">
+                  {selectedStudentProfile.student_name?.slice(0, 1).toUpperCase() || "S"}
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-mono font-bold text-blue-600">
+                      {selectedStudentProfile.student_id}
+                    </span>
+                    <StatusBadge status={selectedStudentProfile.lead_status} />
+                  </div>
+                  <h2 className="text-lg font-bold text-gray-900 leading-tight mt-0.5">
+                    {selectedStudentProfile.student_name}
+                  </h2>
+                  <div className="text-xs text-gray-500">
+                    Parent: {selectedStudentProfile.parent_name}
+                  </div>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSelectedStudentProfile(null)}
+                className="text-gray-400 hover:text-gray-600 p-1.5 rounded-lg hover:bg-gray-100 transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Direct Contact Bar (Call & WhatsApp) */}
+            <div className="p-3 bg-gradient-to-r from-blue-50 to-indigo-50 rounded-xl border border-blue-200 space-y-2">
+              <div className="flex items-center justify-between text-xs font-semibold text-blue-900">
+                <span>Parent Direct Contact</span>
+                <span className="font-mono text-blue-700">{selectedStudentProfile.phone}</span>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                {selectedStudentProfile.phone ? (
+                  <a
+                    href={`tel:${selectedStudentProfile.phone}`}
+                    className="py-2 px-3 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-semibold text-xs flex items-center justify-center gap-1.5 shadow-xs transition-colors"
+                  >
+                    <Phone className="w-3.5 h-3.5" /> Call Parent
+                  </a>
+                ) : null}
+                {selectedStudentProfile.phone ? (
+                  <a
+                    href={`https://wa.me/${selectedStudentProfile.phone.replace(/[^0-9]/g, "")}?text=${encodeURIComponent(
+                      `Hello ${selectedStudentProfile.parent_name}, this is from Tuition Bureau regarding your tuition requirements.`
+                    )}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="py-2 px-3 rounded-lg border border-blue-600 bg-white hover:bg-blue-50 text-blue-700 font-semibold text-xs flex items-center justify-center gap-1.5 shadow-xs transition-colors"
+                  >
+                    <MessageCircle className="w-3.5 h-3.5" /> WhatsApp
+                  </a>
+                ) : null}
+              </div>
+            </div>
+
+            {/* Academic & Requirements Details */}
+            <div className="grid grid-cols-2 gap-3 p-4 bg-gray-50 rounded-xl border border-gray-200 text-xs">
+              <div>
+                <span className="text-gray-400 block mb-0.5 font-medium">Class / Grade</span>
+                <span className="font-semibold text-gray-900">
+                  {selectedStudentProfile.class?.replace("CLASS_", "Class ") || "N/A"}
+                </span>
+                {selectedStudentProfile.board && (
+                  <div className="text-[11px] text-gray-500">{selectedStudentProfile.board}</div>
+                )}
+              </div>
+              <div>
+                <span className="text-gray-400 block mb-0.5 font-medium">Tuition Budget</span>
+                <span className="font-semibold text-gray-900 font-mono">
+                  {formatCurrency(Number(selectedStudentProfile.budget))}/mo
+                </span>
+              </div>
+              <div>
+                <span className="text-gray-400 block mb-0.5 font-medium">Locality</span>
+                <span className="font-semibold text-gray-900">{selectedStudentProfile.locality || "Patna"}</span>
+              </div>
+              <div>
+                <span className="text-gray-400 block mb-0.5 font-medium">Tuition Mode</span>
+                <span className="font-semibold text-gray-900">{selectedStudentProfile.tuition_type || "HOME"}</span>
+              </div>
+              <div className="col-span-2">
+                <span className="text-gray-400 block mb-0.5 font-medium">Required Subjects</span>
+                <span className="font-medium text-gray-800">
+                  {selectedStudentProfile.subjects ? selectedStudentProfile.subjects.split("|").join(", ") : "All"}
+                </span>
+              </div>
+              {selectedStudentProfile.academic_requirements && (
+                <div className="col-span-2 bg-amber-50/60 p-2.5 rounded-lg border border-amber-200 text-amber-900 text-[11px]">
+                  <span className="font-bold block mb-0.5">Parent Notes / Requirements:</span>
+                  {selectedStudentProfile.academic_requirements}
+                </div>
+              )}
+            </div>
+
+            {/* ASSOCIATED TUTORS & ALL ASSIGNMENTS */}
+            <div className="space-y-3">
+              <div className="flex items-center justify-between border-b border-gray-100 pb-2">
+                <div className="flex items-center gap-2">
+                  <ShieldCheck className="w-4 h-4 text-emerald-600" />
+                  <h3 className="text-sm font-bold text-gray-900">
+                    Assigned Tutors & Tuition History
+                  </h3>
+                </div>
+                {(() => {
+                  const stuAssignments = assignments.filter((a) => a.student_id === selectedStudentProfile.student_id);
+                  return (
+                    <span className="text-xs px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 font-semibold border border-emerald-200">
+                      {stuAssignments.length} {stuAssignments.length === 1 ? "tutor" : "tutors"}
+                    </span>
+                  );
+                })()}
+              </div>
+
+              {(() => {
+                const stuAssignments = assignments.filter((a) => a.student_id === selectedStudentProfile.student_id);
+                if (stuAssignments.length === 0) {
+                  return (
+                    <div className="p-4 bg-gray-50 rounded-xl border border-gray-200 text-center text-xs text-gray-500">
+                      No tutors have been assigned to this student yet.
+                    </div>
+                  );
+                }
+
+                return (
+                  <div className="space-y-2.5">
+                    {stuAssignments.map((asg) => {
+                      const tut = tutors.find((t) => t.tutor_id === asg.tutor_id);
+                      return (
+                        <div
+                          key={asg.assignment_id}
+                          className="p-3 bg-white rounded-xl border border-gray-200 hover:border-emerald-300 hover:shadow-xs transition-all space-y-2"
+                        >
+                          <div className="flex items-center justify-between">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (tut) {
+                                  setSelectedStudentProfile(null);
+                                  setSelectedTutorProfile(tut);
+                                }
+                              }}
+                              className="font-bold text-xs text-emerald-700 hover:underline flex items-center gap-1 group text-left"
+                              title="Click to view this tutor profile"
+                            >
+                              <span>{tut?.full_name || asg.tutor_id}</span>
+                              <ExternalLink className="w-3 h-3 group-hover:translate-x-0.5 transition-transform" />
+                            </button>
+                            <StatusBadge status={asg.assignment_status} />
+                          </div>
+
+                          <div className="grid grid-cols-2 gap-2 text-[11px] text-gray-600">
+                            <div>
+                              <span className="text-gray-400">Qualification: </span>
+                              <span className="font-medium text-gray-800">{tut?.highest_qualification || "Tutor"}</span>
+                            </div>
+                            <div>
+                              <span className="text-gray-400">Fee: </span>
+                              <span className="font-mono font-medium text-gray-800">
+                                {asg.agreed_fee ? formatCurrency(Number(asg.agreed_fee)) : "—"}
+                              </span>
+                            </div>
+                            <div className="col-span-2">
+                              <span className="text-gray-400">Subjects: </span>
+                              <span className="font-medium text-gray-800">{asg.subjects.split("|").join(", ")}</span>
+                            </div>
+                          </div>
+
+                          {/* Quick call teacher button */}
+                          {tut?.phone && (
+                            <div className="flex items-center justify-end gap-2 pt-1 border-t border-gray-100">
+                              <a
+                                href={`tel:${tut.phone}`}
+                                className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-blue-50 text-blue-700 hover:bg-blue-100 text-[10px] font-semibold"
+                              >
+                                <Phone className="w-3 h-3" /> Call Teacher
+                              </a>
+                              <a
+                                href={`https://wa.me/${tut.phone.replace(/[^0-9]/g, "")}?text=${encodeURIComponent(
+                                  `Hello ${tut.full_name}, this is regarding your student ${selectedStudentProfile.student_name}.`
+                                )}`}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 hover:bg-emerald-100 text-[10px] font-semibold"
+                              >
+                                <MessageCircle className="w-3 h-3" /> WhatsApp
+                              </a>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })()}
             </div>
           </div>
         </div>

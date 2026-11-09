@@ -96,6 +96,34 @@ export async function PATCH(
       }
     }
 
+    // Automatically store uploaded document images to Cloudinary if configured
+    if (process.env.CLOUDINARY_CLOUD_NAME && process.env.CLOUDINARY_API_SECRET) {
+      try {
+        const { v2: cloudinary } = await import("cloudinary");
+        cloudinary.config({
+          cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+          api_key: process.env.CLOUDINARY_API_KEY,
+          api_secret: process.env.CLOUDINARY_API_SECRET,
+          secure: true,
+        });
+
+        const docFields: (keyof Tutor)[] = ["photo_file_id", "id_proof_file_id", "address_proof_file_id"];
+        for (const df of docFields) {
+          const val = patch[df];
+          if (typeof val === "string" && val.startsWith("data:image")) {
+            const uploadRes = await cloudinary.uploader.upload(val, {
+              folder: `tutors/${tutorId}`,
+              public_id: `${df}_${Date.now()}`,
+              overwrite: true,
+            });
+            (patch as any)[df] = uploadRes.secure_url;
+          }
+        }
+      } catch (cloudErr) {
+        console.warn("Cloudinary direct upload fallback to data URI:", cloudErr);
+      }
+    }
+
     const updated = await adapter.updateRecord<Tutor>(
       "Tutors",
       "tutor_id",

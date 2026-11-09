@@ -39,6 +39,7 @@ export async function PATCH(
       admin_notes: body.admin_notes,
       expectedUpdatedAt: body.expectedUpdatedAt,
       adminId: body.adminId || "admin",
+      reopen: Boolean(body.reopen),
     };
 
     const updatedAssignment = await updateAssignmentStatus(input);

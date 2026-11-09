@@ -2,6 +2,8 @@ import Link from "next/link";
 import { getClientConfig } from "@/config/client-config";
 import { ArrowLeft, ShieldCheck } from "lucide-react";
 
+export const dynamic = "force-dynamic";
+
 export default function PrivacyPage() {
   const config = getClientConfig();
 

@@ -535,6 +535,35 @@ describe("Phase 7 — Assignments Module Tests", () => {
         })
       ).rejects.toThrow("This record was changed by someone else. Reload and try again.");
     });
+
+    it("allows reopening an accidentally CANCELLED assignment back to SHORTLISTED or ACCEPTED", async () => {
+      const student = createMockStudent();
+      const tutor = createMockTutor();
+      inMemoryAssignmentStore.seedStudents([student]);
+      inMemoryAssignmentStore.seedTutors([tutor]);
+
+      const asg = await createAssignment({
+        student_id: student.student_id,
+        tutor_id: tutor.tutor_id,
+        subjects: "Mathematics",
+      });
+
+      // Cancel assignment
+      const cancelled = await updateAssignmentStatus({
+        assignmentId: asg.assignment_id,
+        newStatus: "CANCELLED",
+      });
+      expect(cancelled.assignment_status).toBe("CANCELLED");
+
+      // Reopen assignment back to SHORTLISTED
+      const reopened = await updateAssignmentStatus({
+        assignmentId: asg.assignment_id,
+        newStatus: "SHORTLISTED",
+        reopen: true,
+      });
+      expect(reopened.assignment_status).toBe("SHORTLISTED");
+      expect(reopened.end_date).toBe("");
+    });
   });
 
   // =========================================================================

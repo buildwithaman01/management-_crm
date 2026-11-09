@@ -20,6 +20,7 @@ import {
   User,
   X,
   ExternalLink,
+  Phone,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -533,6 +534,16 @@ function TutorFinderInner() {
                       >
                         Shortlist & Assign <ArrowRight className="w-3.5 h-3.5 ml-1" />
                       </Button>
+
+                      {tutor.phone && (
+                        <a
+                          href={`tel:${cleanPhoneNumber(tutor.phone)}`}
+                          className="inline-flex items-center justify-center h-8 px-2.5 rounded-lg border border-blue-300 bg-blue-50 text-blue-700 hover:bg-blue-100 text-xs font-medium"
+                          title="Call Tutor"
+                        >
+                          <Phone className="w-3.5 h-3.5 mr-1" /> Call
+                        </a>
+                      )}
 
                       {tutor.phone && (
                         <a

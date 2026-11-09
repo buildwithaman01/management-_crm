@@ -4,6 +4,8 @@ import { MetricCard } from "@/components/ui/metric-card";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { Users, GraduationCap, CheckCircle2, ShieldCheck, ArrowRight } from "lucide-react";
 
+export const dynamic = "force-dynamic";
+
 export default function HomePage() {
   const config = getClientConfig();
 

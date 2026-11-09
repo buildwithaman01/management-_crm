@@ -96,8 +96,9 @@ export default function TutorRegistrationPage() {
     if (file) {
       const reader = new FileReader();
       reader.onload = () => {
-        setPhotoPreview(reader.result as string);
-        setPhotoFileId(`cld_photo_${Date.now()}_${file.name.replace(/[^a-zA-Z0-9.-]/g, "_")}`);
+        const dataUrl = reader.result as string;
+        setPhotoPreview(dataUrl);
+        setPhotoFileId(dataUrl);
       };
       reader.readAsDataURL(file);
     }
@@ -107,7 +108,11 @@ export default function TutorRegistrationPage() {
     const file = e.target.files?.[0];
     if (file) {
       setIdProofFrontName(file.name);
-      setIdProofFileId(`cld_aadhaar_front_${Date.now()}_${file.name.replace(/[^a-zA-Z0-9.-]/g, "_")}`);
+      const reader = new FileReader();
+      reader.onload = () => {
+        setIdProofFileId(reader.result as string);
+      };
+      reader.readAsDataURL(file);
     }
   };
 
@@ -115,7 +120,11 @@ export default function TutorRegistrationPage() {
     const file = e.target.files?.[0];
     if (file) {
       setIdProofBackName(file.name);
-      setIdProofBackFileId(`cld_aadhaar_back_${Date.now()}_${file.name.replace(/[^a-zA-Z0-9.-]/g, "_")}`);
+      const reader = new FileReader();
+      reader.onload = () => {
+        setIdProofBackFileId(reader.result as string);
+      };
+      reader.readAsDataURL(file);
     }
   };
 

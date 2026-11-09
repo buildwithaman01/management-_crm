@@ -1,4 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
+import { revalidatePath } from "next/cache";
+import fs from "fs";
+import path from "path";
 import { GoogleSheetsAdapter } from "@/lib/google-sheets/adapter";
 import { MatchWeights } from "@/features/matching/matching-engine";
 import {
@@ -209,6 +212,81 @@ export async function POST(req: NextRequest) {
 
     // Store in-memory
     setInMemorySettingsStore(updatesToStore);
+
+    // Persist branding to data/bureau-branding.json for instant full white-label syncing (skip in test mode)
+    const isTest = Boolean(process.env.VITEST || process.env.NODE_ENV === "test");
+    if (branding && !isTest) {
+      try {
+        const dataDir = path.join(process.cwd(), "data");
+        if (!fs.existsSync(dataDir)) {
+          fs.mkdirSync(dataDir, { recursive: true });
+        }
+        const brandingPath = path.join(dataDir, "bureau-branding.json");
+        let existingBranding: Record<string, any> = {};
+        if (fs.existsSync(brandingPath)) {
+          try {
+            existingBranding = JSON.parse(fs.readFileSync(brandingPath, "utf8"));
+          } catch {
+            existingBranding = {};
+          }
+        }
+        const mergedBranding = {
+          ...existingBranding,
+          bureauName: branding.bureauName?.trim() || existingBranding.bureauName || "",
+          shortName: branding.bureauName?.trim() || existingBranding.shortName || "",
+          city: branding.city?.trim() || existingBranding.city || "",
+          phone: branding.phone?.trim() || existingBranding.phone || "",
+          supportEmail: branding.supportEmail?.trim() || existingBranding.supportEmail || "",
+          currency: branding.currency?.trim() || existingBranding.currency || "INR",
+          currencySymbol: branding.currencySymbol?.trim() || existingBranding.currencySymbol || "₹",
+          address: branding.address?.trim() || existingBranding.address || "",
+          website: branding.website?.trim() || existingBranding.website || "",
+        };
+        fs.writeFileSync(brandingPath, JSON.stringify(mergedBranding, null, 2), "utf8");
+
+        // Also sync clients/swati/config.ts so hot-reloads and static references always match
+        try {
+          const swatiConfigPath = path.join(process.cwd(), "clients", "swati", "config.ts");
+          if (fs.existsSync(swatiConfigPath)) {
+            let content = fs.readFileSync(swatiConfigPath, "utf8");
+            if (mergedBranding.bureauName) {
+              content = content.replace(/businessName:\s*"[^"]*"/, `businessName: "${mergedBranding.bureauName}"`);
+              content = content.replace(/shortName:\s*"[^"]*"/, `shortName: "${mergedBranding.shortName}"`);
+            }
+            if (mergedBranding.city) {
+              content = content.replace(/city:\s*"[^"]*"/, `city: "${mergedBranding.city}"`);
+            }
+            if (mergedBranding.phone) {
+              content = content.replace(/phone:\s*"[^"]*"/, `phone: "${mergedBranding.phone}"`);
+              content = content.replace(/whatsapp:\s*"[^"]*"/, `whatsapp: "${mergedBranding.phone}"`);
+            }
+            if (mergedBranding.supportEmail) {
+              content = content.replace(/email:\s*"[^"]*"/, `email: "${mergedBranding.supportEmail}"`);
+            }
+            if (mergedBranding.currency) {
+              content = content.replace(/currency:\s*"[^"]*"/, `currency: "${mergedBranding.currency}"`);
+            }
+            if (mergedBranding.currencySymbol) {
+              content = content.replace(/currencySymbol:\s*"[^"]*"/, `currencySymbol: "${mergedBranding.currencySymbol}"`);
+            }
+            fs.writeFileSync(swatiConfigPath, content, "utf8");
+          }
+        } catch (swatiErr) {
+          console.warn("[Settings API] Warning syncing clients/swati/config.ts:", swatiErr);
+        }
+
+        // Revalidate Next.js cache so layout, headers, footers and pages update immediately
+        try {
+          revalidatePath("/", "layout");
+          revalidatePath("/privacy");
+          revalidatePath("/");
+        } catch {
+          // Ignore in non-request contexts
+        }
+      } catch (fileErr) {
+        console.warn("[Settings API] Warning saving bureau-branding.json:", fileErr);
+      }
+    }
 
     // Save to Google Sheets if configured
     if (process.env.SPREADSHEET_ID && process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL) {

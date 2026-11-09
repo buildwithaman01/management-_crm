@@ -18,6 +18,7 @@ import {
   Pencil,
   Trash2,
   UserPlus,
+  Phone,
 } from "lucide-react";
 import { AddStudentModal } from "@/components/dashboard/add-student-modal";
 import { formatDate, formatCurrency } from "@/lib/utils";
@@ -332,6 +333,17 @@ export default function StudentsPage() {
                     </td>
                     <td className="py-3.5 px-4 text-right">
                       <div className="inline-flex items-center gap-1.5">
+                        {/* Call Button */}
+                        {s.phone && (
+                          <a
+                            href={`tel:${s.phone}`}
+                            className="p-1.5 text-blue-600 hover:bg-blue-50 rounded"
+                            title={`Call ${s.parent_name} (${s.phone})`}
+                          >
+                            <Phone className="w-4 h-4" />
+                          </a>
+                        )}
+
                         {/* WhatsApp Click-to-Chat (Section 19) */}
                         {s.phone && (
                           <a
@@ -520,17 +532,26 @@ export default function StudentsPage() {
                   <span>Launch Tutor Finder for this Student</span>
                 </Link>
 
-                <a
-                  href={`https://wa.me/${activeStudent.phone.replace(/[^0-9]/g, "")}?text=${encodeURIComponent(
-                    `Hello ${activeStudent.parent_name}, this is from Tuition Bureau regarding your request for ${activeStudent.student_name}.`
-                  )}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="w-full py-2 px-4 rounded-lg border border-emerald-600 text-emerald-700 hover:bg-emerald-50 text-xs font-medium flex items-center justify-center gap-2 transition-colors"
-                >
-                  <MessageSquare className="w-4 h-4" />
-                  <span>Contact on WhatsApp</span>
-                </a>
+                <div className="grid grid-cols-2 gap-2">
+                  <a
+                    href={`tel:${activeStudent.phone}`}
+                    className="w-full py-2 px-3 rounded-lg border border-blue-600 bg-blue-50 text-blue-700 hover:bg-blue-100 text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors"
+                  >
+                    <Phone className="w-3.5 h-3.5" />
+                    <span>Call Parent</span>
+                  </a>
+                  <a
+                    href={`https://wa.me/${activeStudent.phone.replace(/[^0-9]/g, "")}?text=${encodeURIComponent(
+                      `Hello ${activeStudent.parent_name}, this is from Tuition Bureau regarding your request for ${activeStudent.student_name}.`
+                    )}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="w-full py-2 px-3 rounded-lg border border-emerald-600 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors"
+                  >
+                    <MessageSquare className="w-3.5 h-3.5" />
+                    <span>WhatsApp</span>
+                  </a>
+                </div>
 
                 <Button
                   type="button"

@@ -115,6 +115,51 @@ export class TutorSubmissionService {
       ? joinMulti(input.qualification_file_ids)
       : input.qualification_file_ids || "";
 
+    let photoFileId = input.photo_file_id || "";
+    let idProofFileId = input.id_proof_file_id || "";
+    let addressProofFileId = input.id_proof_back_file_id || "";
+
+    if (process.env.CLOUDINARY_CLOUD_NAME && process.env.CLOUDINARY_API_SECRET) {
+      try {
+        const { v2: cloudinary } = await import("cloudinary");
+        cloudinary.config({
+          cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+          api_key: process.env.CLOUDINARY_API_KEY,
+          api_secret: process.env.CLOUDINARY_API_SECRET,
+          secure: true,
+        });
+
+        if (photoFileId.startsWith("data:image")) {
+          const res = await cloudinary.uploader.upload(photoFileId, {
+            folder: `tutors/${tutorId}`,
+            public_id: `photo_${Date.now()}`,
+            overwrite: true,
+          });
+          photoFileId = res.secure_url;
+        }
+
+        if (idProofFileId.startsWith("data:image")) {
+          const res = await cloudinary.uploader.upload(idProofFileId, {
+            folder: `tutors/${tutorId}`,
+            public_id: `id_front_${Date.now()}`,
+            overwrite: true,
+          });
+          idProofFileId = res.secure_url;
+        }
+
+        if (addressProofFileId.startsWith("data:image")) {
+          const res = await cloudinary.uploader.upload(addressProofFileId, {
+            folder: `tutors/${tutorId}`,
+            public_id: `id_back_${Date.now()}`,
+            overwrite: true,
+          });
+          addressProofFileId = res.secure_url;
+        }
+      } catch (cloudErr) {
+        console.warn("Cloudinary direct upload fallback to data URI:", cloudErr);
+      }
+    }
+
     const tutorRecord: Tutor = {
       tutor_id: tutorId,
       created_at: now.toISOString(),
@@ -141,11 +186,11 @@ export class TutorSubmissionService {
       available_timings: timingsStr,
       available_days: daysStr,
       introduction: input.introduction || "",
-      photo_file_id: input.photo_file_id,
+      photo_file_id: photoFileId,
       id_type: input.id_type || "AADHAAR",
       id_number: input.id_number,
-      id_proof_file_id: input.id_proof_file_id,
-      address_proof_file_id: input.id_proof_back_file_id || "",
+      id_proof_file_id: idProofFileId,
+      address_proof_file_id: addressProofFileId,
       resume_file_id: input.resume_file_id || "",
       qualification_file_ids: qualDocsStr,
       background_check_status: "NOT_STARTED",

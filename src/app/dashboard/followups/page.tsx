@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useMemo } from "react";
+import Link from "next/link";
 import { SearchInput } from "@/components/ui/search-input";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -72,10 +73,39 @@ export default function FollowupsPage() {
     phone: "",
   });
   const [targetFollowup, setTargetFollowup] = useState<FollowUp | null>(null);
+  const [contacts, setContacts] = useState<Record<string, { name: string; phone: string; type: string }>>({});
 
   useEffect(() => {
     loadFollowups();
+    loadContacts();
   }, []);
+
+  const loadContacts = async () => {
+    try {
+      const [stuRes, tutRes] = await Promise.all([
+        fetch("/api/admin/students").then((r) => r.json()).catch(() => ({})),
+        fetch("/api/admin/tutors").then((r) => r.json()).catch(() => ({})),
+      ]);
+      const map: Record<string, { name: string; phone: string; type: string }> = {};
+      if (stuRes?.students && Array.isArray(stuRes.students)) {
+        for (const s of stuRes.students) {
+          if (s.student_id) {
+            map[s.student_id] = { name: s.student_name || "Student", phone: s.phone || "", type: "STUDENT" };
+          }
+        }
+      }
+      if (tutRes?.tutors && Array.isArray(tutRes.tutors)) {
+        for (const t of tutRes.tutors) {
+          if (t.tutor_id) {
+            map[t.tutor_id] = { name: t.full_name || "Tutor", phone: t.phone || "", type: "TUTOR" };
+          }
+        }
+      }
+      setContacts(map);
+    } catch {
+      // Ignore
+    }
+  };
 
   const loadFollowups = async () => {
     setLoading(true);
@@ -203,18 +233,22 @@ export default function FollowupsPage() {
   const openWhatsAppDialog = (followup?: FollowUp) => {
     setTargetFollowup(followup || null);
     if (followup) {
+      const contact = contacts[followup.related_id];
+      if (contact?.phone) {
+        setRecipientPhone(contact.phone);
+      }
       // Pick template based on entity type
       if (followup.related_type === "TUTOR") {
         setSelectedTemplateId("TUTOR_WELCOME");
         setTemplateVars((prev) => ({
           ...prev,
-          tutor_name: followup.related_id,
+          tutor_name: contact?.name || followup.related_id,
         }));
       } else {
         setSelectedTemplateId("FOLLOWUP_CHECKIN");
         setTemplateVars((prev) => ({
           ...prev,
-          student_name: followup.related_id,
+          student_name: contact?.name || followup.related_id,
         }));
       }
     }
@@ -624,19 +658,44 @@ export default function FollowupsPage() {
 
                       {/* Related Entity */}
                       <td className="px-4 py-3 whitespace-nowrap">
-                        <span
-                          className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-bold ${
-                            item.related_type === "STUDENT"
-                              ? "bg-purple-100 text-purple-800"
-                              : item.related_type === "TUTOR"
-                              ? "bg-teal-100 text-teal-800"
-                              : "bg-indigo-100 text-indigo-800"
-                          }`}
-                        >
-                          {item.related_type}
-                        </span>
-                        <div className="font-medium text-gray-900 mt-0.5 text-xs">
-                          {item.related_id}
+                        <div className="flex items-center gap-1.5">
+                          <span
+                            className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                              item.related_type === "STUDENT"
+                                ? "bg-purple-100 text-purple-800"
+                                : item.related_type === "TUTOR"
+                                ? "bg-teal-100 text-teal-800"
+                                : "bg-indigo-100 text-indigo-800"
+                            }`}
+                          >
+                            {item.related_type}
+                          </span>
+                          {contacts[item.related_id]?.name && (
+                            <span className="text-xs font-semibold text-gray-900">
+                              {contacts[item.related_id].name}
+                            </span>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-1.5 mt-0.5">
+                          <Link
+                            href={
+                              item.related_type === "STUDENT"
+                                ? `/dashboard/students?search=${encodeURIComponent(item.related_id)}`
+                                : item.related_type === "TUTOR"
+                                ? `/dashboard/tutors?search=${encodeURIComponent(item.related_id)}`
+                                : `/dashboard/assignments?search=${encodeURIComponent(item.related_id)}`
+                            }
+                            className="font-mono text-blue-600 hover:text-blue-800 hover:underline text-xs inline-flex items-center gap-0.5"
+                            title="Open profile in CRM"
+                          >
+                            {item.related_id}
+                            <ExternalLink className="w-2.5 h-2.5" />
+                          </Link>
+                          {contacts[item.related_id]?.phone && (
+                            <span className="text-[10px] font-mono text-gray-400">
+                              ({contacts[item.related_id].phone})
+                            </span>
+                          )}
                         </div>
                       </td>
 
@@ -717,6 +776,18 @@ export default function FollowupsPage() {
                           </Button>
                         )}
 
+                        {/* Direct Call Action */}
+                        {contacts[item.related_id]?.phone && (
+                          <a
+                            href={`tel:${contacts[item.related_id].phone}`}
+                            className="inline-flex items-center justify-center text-blue-700 border border-blue-200 bg-blue-50 hover:bg-blue-100 rounded-md text-[11px] h-7 px-2 transition-colors shadow-xs"
+                            title={`Call ${contacts[item.related_id].name || item.related_id} (${contacts[item.related_id].phone})`}
+                          >
+                            <Phone className="w-3 h-3 text-blue-600 mr-1" />
+                            Call
+                          </a>
+                        )}
+
                         {/* WhatsApp Message Opener */}
                         <Button
                           type="button"
@@ -726,7 +797,8 @@ export default function FollowupsPage() {
                           className="text-emerald-800 border-gray-200 hover:bg-emerald-50 text-[11px] h-7 px-2"
                           title="Open WhatsApp template dialog"
                         >
-                          <MessageSquare className="w-3 h-3 text-emerald-600" />
+                          <MessageSquare className="w-3 h-3 text-emerald-600 mr-1" />
+                          WhatsApp
                         </Button>
 
                         {/* Cancel Action if open */}

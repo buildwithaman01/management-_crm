@@ -18,6 +18,9 @@ import {
   Clock,
   RefreshCw,
   UserPlus,
+  Phone,
+  MessageCircle,
+  ExternalLink,
 } from "lucide-react";
 import { formatDate } from "@/lib/utils";
 import { AddStudentModal } from "@/components/dashboard/add-student-modal";
@@ -231,19 +234,50 @@ export default function DashboardOverviewPage() {
           ) : (
             <div className="divide-y divide-gray-100">
               {recentStudents.map((s: any) => (
-                <div key={s.student_id} className="py-3 flex items-center justify-between hover:bg-gray-50/75 px-1 rounded-lg transition-colors">
-                  <div>
+                <div key={s.student_id} className="py-3 flex flex-col sm:flex-row sm:items-center justify-between hover:bg-gray-50/75 p-2 rounded-lg transition-colors gap-2">
+                  <div className="min-w-0">
                     <div className="flex items-center gap-2">
-                      <p className="text-sm font-semibold text-gray-900">{s.student_name}</p>
+                      <Link
+                        href={`/dashboard/students?search=${encodeURIComponent(s.student_id)}`}
+                        className="text-sm font-semibold text-blue-700 hover:text-blue-900 hover:underline flex items-center gap-1"
+                        title="Open student details"
+                      >
+                        {s.student_name}
+                        <ExternalLink className="w-3 h-3 text-blue-400" />
+                      </Link>
                       <span className="text-[10px] font-mono text-gray-400">({s.student_id})</span>
                     </div>
-                    <p className="text-xs text-gray-500 mt-0.5">
+                    <p className="text-xs text-gray-500 mt-0.5 truncate">
                       {s.class?.replace("_", " ")} • {s.locality || "Patna"} • {s.subjects?.split("|").join(", ")}
                     </p>
                   </div>
-                  <div className="text-right flex flex-col items-end gap-1">
-                    <StatusBadge status={s.lead_status || "NEW"} />
-                    <span className="text-[10px] text-gray-400">{formatDate(s.created_at)}</span>
+                  <div className="flex items-center justify-between sm:justify-end gap-2.5 shrink-0">
+                    {s.phone && (
+                      <div className="flex items-center gap-1">
+                        <a
+                          href={`tel:${s.phone}`}
+                          className="inline-flex items-center justify-center w-7 h-7 rounded-lg bg-blue-50 text-blue-700 hover:bg-blue-100 border border-blue-200 transition-colors shadow-xs"
+                          title={`Call Student/Parent (${s.phone})`}
+                        >
+                          <Phone className="w-3.5 h-3.5" />
+                        </a>
+                        <a
+                          href={`https://wa.me/${s.phone.replace(/[^0-9]/g, "")}?text=${encodeURIComponent(
+                            `Hello ${s.student_name}, this is regarding your home tuition requirement.`
+                          )}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center justify-center w-7 h-7 rounded-lg bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border border-emerald-200 transition-colors shadow-xs"
+                          title="WhatsApp Chat"
+                        >
+                          <MessageCircle className="w-3.5 h-3.5" />
+                        </a>
+                      </div>
+                    )}
+                    <div className="text-right flex flex-col items-end gap-0.5">
+                      <StatusBadge status={s.lead_status || "NEW"} />
+                      <span className="text-[10px] text-gray-400">{formatDate(s.created_at)}</span>
+                    </div>
                   </div>
                 </div>
               ))}
@@ -275,8 +309,8 @@ export default function DashboardOverviewPage() {
               {recentTutors.map((t: any) => {
                 const hasPhoto = t.photo_file_id && (t.photo_file_id.startsWith("data:image") || t.photo_file_id.startsWith("http") || t.photo_file_id.startsWith("/"));
                 return (
-                  <div key={t.tutor_id} className="py-3 flex items-center justify-between hover:bg-gray-50/75 px-1 rounded-lg transition-colors">
-                    <div className="flex items-center gap-3">
+                  <div key={t.tutor_id} className="py-3 flex flex-col sm:flex-row sm:items-center justify-between hover:bg-gray-50/75 p-2 rounded-lg transition-colors gap-2">
+                    <div className="flex items-center gap-3 min-w-0">
                       {hasPhoto ? (
                         <img
                           src={t.photo_file_id}
@@ -288,19 +322,50 @@ export default function DashboardOverviewPage() {
                           {t.full_name?.slice(0, 1).toUpperCase()}
                         </div>
                       )}
-                      <div>
+                      <div className="min-w-0">
                         <div className="flex items-center gap-2">
-                          <p className="text-sm font-semibold text-gray-900">{t.full_name}</p>
+                          <Link
+                            href={`/dashboard/tutors?search=${encodeURIComponent(t.tutor_id)}`}
+                            className="text-sm font-semibold text-blue-700 hover:text-blue-900 hover:underline flex items-center gap-1"
+                            title="Open tutor profile"
+                          >
+                            {t.full_name}
+                            <ExternalLink className="w-3 h-3 text-blue-400" />
+                          </Link>
                           <span className="text-[10px] font-mono text-gray-400">({t.tutor_id})</span>
                         </div>
-                        <p className="text-xs text-gray-500 mt-0.5">
+                        <p className="text-xs text-gray-500 mt-0.5 truncate">
                           {t.highest_qualification} • {t.experience_years} yrs exp • ₹{t.expected_fee}/mo
                         </p>
                       </div>
                     </div>
-                    <div className="text-right flex flex-col items-end gap-1">
-                      <StatusBadge status={t.verification_status || "PENDING"} />
-                      <span className="text-[10px] text-gray-400">{formatDate(t.created_at)}</span>
+                    <div className="flex items-center justify-between sm:justify-end gap-2.5 shrink-0">
+                      {t.phone && (
+                        <div className="flex items-center gap-1">
+                          <a
+                            href={`tel:${t.phone}`}
+                            className="inline-flex items-center justify-center w-7 h-7 rounded-lg bg-blue-50 text-blue-700 hover:bg-blue-100 border border-blue-200 transition-colors shadow-xs"
+                            title={`Call Tutor (${t.phone})`}
+                          >
+                            <Phone className="w-3.5 h-3.5" />
+                          </a>
+                          <a
+                            href={`https://wa.me/${t.phone.replace(/[^0-9]/g, "")}?text=${encodeURIComponent(
+                              `Hello ${t.full_name}, this is from Tuition Bureau regarding your tutor registration.`
+                            )}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center justify-center w-7 h-7 rounded-lg bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border border-emerald-200 transition-colors shadow-xs"
+                            title="WhatsApp Chat"
+                          >
+                            <MessageCircle className="w-3.5 h-3.5" />
+                          </a>
+                        </div>
+                      )}
+                      <div className="text-right flex flex-col items-end gap-0.5">
+                        <StatusBadge status={t.verification_status || "PENDING"} />
+                        <span className="text-[10px] text-gray-400">{formatDate(t.created_at)}</span>
+                      </div>
                     </div>
                   </div>
                 );

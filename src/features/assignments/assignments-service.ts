@@ -36,6 +36,7 @@ export interface UpdateAssignmentStatusInput {
   admin_notes?: string;
   expectedUpdatedAt?: string;
   adminId?: string;
+  reopen?: boolean;
 }
 
 // In-memory fallback stores for testing & development without Google Sheets
@@ -347,15 +348,26 @@ export async function updateAssignmentStatus(
 
   // 2. Concurrency check (Section 6.1)
   if (input.expectedUpdatedAt && existing.updated_at !== input.expectedUpdatedAt) {
-    throw new Error("This record was changed by someone else. Reload and try again.");
+    if (existing.assignment_status === input.newStatus) {
+      return existing;
+    }
+    if (!input.reopen) {
+      throw new Error("This record was changed by someone else. Reload and try again.");
+    }
   }
 
   const fromStatus = existing.assignment_status;
   const toStatus = input.newStatus;
+  const isReopen = Boolean(input.reopen || fromStatus === "CANCELLED" || fromStatus === "REJECTED");
 
   // 3. Status transition rules (Section 7.2)
   if (fromStatus === toStatus) {
     // If status is identical, handle update of fields like demo_at, agreed_fee, notes
+  } else if (
+    isReopen &&
+    (toStatus === "SHORTLISTED" || toStatus === "CONTACTED" || toStatus === "ACCEPTED" || toStatus === "DEMO_SCHEDULED")
+  ) {
+    // Admin authorized reopening / restoration from terminal cancelled state
   } else if (!isValidAssignmentTransition(fromStatus, toStatus)) {
     const allowed = ALLOWED_ASSIGNMENT_TRANSITIONS[fromStatus] || [];
     throw new Error(
@@ -369,6 +381,13 @@ export async function updateAssignmentStatus(
     updated_at: now,
   };
 
+  if (isReopen && (fromStatus === "CANCELLED" || fromStatus === "REJECTED")) {
+    patch.end_date = "";
+    if (existing.demo_status === "CANCELLED") {
+      patch.demo_status = "NOT_SCHEDULED";
+    }
+  }
+
   // 4. Target status specific requirements (Section 17)
   if (toStatus === "DEMO_SCHEDULED") {
     const demoAt = input.demo_at || existing.demo_at;
@@ -379,6 +398,14 @@ export async function updateAssignmentStatus(
     patch.demo_status = "SCHEDULED";
   } else if (toStatus === "DEMO_COMPLETED") {
     patch.demo_status = "COMPLETED";
+    if (input.demo_at) patch.demo_at = input.demo_at;
+  } else if (toStatus === "ACCEPTED") {
+    if (input.agreed_fee !== undefined) {
+      patch.agreed_fee = Number(input.agreed_fee);
+    }
+    if (existing.demo_status === "SCHEDULED" || input.demo_status === "COMPLETED") {
+      patch.demo_status = "COMPLETED";
+    }
   } else if (toStatus === "ACTIVE") {
     if (input.start_date) {
       patch.start_date = input.start_date;
@@ -433,7 +460,7 @@ export async function updateAssignmentStatus(
     let studentNewStatus: Student["lead_status"] | null = null;
     if (toStatus === "DEMO_SCHEDULED") {
       studentNewStatus = "DEMO_SCHEDULED";
-    } else if (toStatus === "ACTIVE") {
+    } else if (toStatus === "ACCEPTED" || toStatus === "ACTIVE") {
       studentNewStatus = "CONVERTED";
     }
 
