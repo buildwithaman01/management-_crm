@@ -16,7 +16,10 @@ export function getGoogleSheetsClient(): sheets_v4.Sheets {
     );
   }
 
-  // Handle newline escapes in private key (Section 3)
+  // Handle newline escapes and optional surrounding quotes in private key (Section 3)
+  if (privateKey.startsWith('"') && privateKey.endsWith('"')) {
+    privateKey = privateKey.slice(1, -1);
+  }
   privateKey = privateKey.replace(/\\n/g, "\n");
 
   const auth = new google.auth.JWT({
