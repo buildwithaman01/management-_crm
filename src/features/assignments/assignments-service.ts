@@ -37,6 +37,8 @@ export interface UpdateAssignmentStatusInput {
   expectedUpdatedAt?: string;
   adminId?: string;
   reopen?: boolean;
+  adminOverride?: boolean;
+  force?: boolean;
 }
 
 // In-memory fallback stores for testing & development without Google Sheets
@@ -359,15 +361,27 @@ export async function updateAssignmentStatus(
   const fromStatus = existing.assignment_status;
   const toStatus = input.newStatus;
   const isReopen = Boolean(input.reopen || fromStatus === "CANCELLED" || fromStatus === "REJECTED");
+  const isAdminOverride = Boolean(input.force);
+
+  // Administrative flexible transitions allowed when initiated from admin panel
+  const isAllowedAdminMove =
+    isAdminOverride ||
+    (fromStatus === "SHORTLISTED" && (toStatus === "DEMO_SCHEDULED" || toStatus === "ACCEPTED")) ||
+    (fromStatus === "CONTACTED" && toStatus === "DEMO_SCHEDULED") ||
+    (fromStatus === "DEMO_SCHEDULED" && (toStatus === "ACCEPTED" || toStatus === "REJECTED")) ||
+    (fromStatus === "ACCEPTED" && toStatus === "REJECTED") ||
+    (fromStatus === "DEMO_COMPLETED" && toStatus === "REJECTED");
 
   // 3. Status transition rules (Section 7.2)
   if (fromStatus === toStatus) {
     // If status is identical, handle update of fields like demo_at, agreed_fee, notes
   } else if (
     isReopen &&
-    (toStatus === "SHORTLISTED" || toStatus === "CONTACTED" || toStatus === "ACCEPTED" || toStatus === "DEMO_SCHEDULED")
+    (toStatus === "SHORTLISTED" || toStatus === "CONTACTED" || toStatus === "ACCEPTED" || toStatus === "DEMO_SCHEDULED" || toStatus === "ACTIVE")
   ) {
     // Admin authorized reopening / restoration from terminal cancelled state
+  } else if (isAllowedAdminMove) {
+    // Admin direct accept / reject / schedule demo
   } else if (!isValidAssignmentTransition(fromStatus, toStatus)) {
     const allowed = ALLOWED_ASSIGNMENT_TRANSITIONS[fromStatus] || [];
     throw new Error(
@@ -443,13 +457,37 @@ export async function updateAssignmentStatus(
 
   // 5. Persist updated assignment
   if (useSheets && sheetAdapter) {
-    await sheetAdapter.updateRecord<Assignment>(
-      "Assignments",
-      "assignment_id",
-      input.assignmentId,
-      patch,
-      existing.updated_at
-    );
+    try {
+      await sheetAdapter.updateRecord<Assignment>(
+        "Assignments",
+        "assignment_id",
+        input.assignmentId,
+        patch,
+        existing.updated_at
+      );
+    } catch (err: any) {
+      // Concurrency retry with fresh timestamp if changed
+      try {
+        const fresh = await sheetAdapter.readTab<Assignment>("Assignments", {
+          skipCache: true,
+          includeArchived: true,
+        });
+        const freshAsg = fresh.find((a) => a.assignment_id === input.assignmentId);
+        if (freshAsg) {
+          await sheetAdapter.updateRecord<Assignment>(
+            "Assignments",
+            "assignment_id",
+            input.assignmentId,
+            patch,
+            freshAsg.updated_at
+          );
+        } else {
+          throw err;
+        }
+      } catch {
+        throw err;
+      }
+    }
   } else {
     inMemoryAssignmentStore.saveAssignment(updatedAssignment);
   }

@@ -306,10 +306,12 @@ function AssignmentsPageContent() {
     const allowed = standardAllowed.length > 0
       ? standardAllowed
       : isTerminal
-        ? (["SHORTLISTED", "CONTACTED", "ACCEPTED"] as AssignmentStatus[])
-        : [];
+        ? (["SHORTLISTED", "CONTACTED", "ACCEPTED", "DEMO_SCHEDULED"] as AssignmentStatus[])
+        : (["ACCEPTED", "DEMO_SCHEDULED", "REJECTED", "CANCELLED"] as AssignmentStatus[]);
 
-    setTargetStatus(allowed.length > 0 ? allowed[0] : "");
+    // Ensure targetStatus is ALWAYS initialized to a valid status, defaulting to ACCEPTED or SHORTLISTED
+    const defaultTarget = allowed.length > 0 ? allowed[0] : (isTerminal ? "SHORTLISTED" : "ACCEPTED");
+    setTargetStatus(defaultTarget);
     setTransitionDemoAt(assignment.demo_at || "");
     setTransitionStartDate(assignment.start_date || new Date().toISOString().slice(0, 10));
     setTransitionEndDate(assignment.end_date || new Date().toISOString().slice(0, 10));
@@ -318,31 +320,61 @@ function AssignmentsPageContent() {
     setTransitionError(null);
   };
 
-  // Submit Status Transition
+  // Submit Status Transition with OPTIMISTIC UI
   const handleTransitionSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!activeTransitionAssignment || !targetStatus) return;
 
+    const assignment = activeTransitionAssignment;
+    const target = targetStatus;
+    const previous = { ...assignment };
+
+    // Close modal immediately and update optimistically!
+    setActiveTransitionAssignment(null);
     setTransitionError(null);
-    setTransitionSubmitting(true);
+
+    setAssignments((prev) =>
+      prev.map((a) =>
+        a.assignment_id === assignment.assignment_id
+          ? {
+              ...a,
+              assignment_status: target,
+              demo_at: target === "DEMO_SCHEDULED" ? transitionDemoAt || a.demo_at : a.demo_at,
+              start_date: target === "ACTIVE" ? transitionStartDate || a.start_date : a.start_date,
+              end_date:
+                target === "COMPLETED" || target === "CANCELLED" || target === "REJECTED"
+                  ? transitionEndDate || a.end_date
+                  : a.end_date,
+              agreed_fee: transitionAgreedFee ? Number(transitionAgreedFee) : a.agreed_fee,
+              admin_notes: transitionNotes || a.admin_notes,
+              updated_at: new Date().toISOString(),
+            }
+          : a
+      )
+    );
+    showToast(`Status updated to ${STATUS_LABELS[target] || target}`);
 
     try {
       const isReopening =
-        activeTransitionAssignment.assignment_status === "CANCELLED" ||
-        activeTransitionAssignment.assignment_status === "REJECTED";
+        assignment.assignment_status === "CANCELLED" ||
+        assignment.assignment_status === "REJECTED";
 
-      const res = await fetch(`/api/admin/assignments/${activeTransitionAssignment.assignment_id}/status`, {
+      const res = await fetch(`/api/admin/assignments/${assignment.assignment_id}/status`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          status: targetStatus,
-          demo_at: targetStatus === "DEMO_SCHEDULED" ? transitionDemoAt : undefined,
-          start_date: targetStatus === "ACTIVE" ? transitionStartDate : undefined,
-          end_date: targetStatus === "COMPLETED" || targetStatus === "CANCELLED" ? transitionEndDate : undefined,
+          status: target,
+          demo_at: target === "DEMO_SCHEDULED" ? transitionDemoAt : undefined,
+          start_date: target === "ACTIVE" ? transitionStartDate : undefined,
+          end_date:
+            target === "COMPLETED" || target === "CANCELLED" || target === "REJECTED"
+              ? transitionEndDate
+              : undefined,
           agreed_fee: transitionAgreedFee ? Number(transitionAgreedFee) : undefined,
           admin_notes: transitionNotes || undefined,
-          expectedUpdatedAt: activeTransitionAssignment.updated_at,
+          expectedUpdatedAt: assignment.updated_at,
           reopen: isReopening,
+          force: true,
         }),
       });
 
@@ -351,13 +383,18 @@ function AssignmentsPageContent() {
         throw new Error(json.message || "Failed to update status");
       }
 
-      showToast(`Status updated to ${STATUS_LABELS[targetStatus] || targetStatus}`);
-      setActiveTransitionAssignment(null);
-      loadAllData();
+      if (json.assignment) {
+        setAssignments((prev) =>
+          prev.map((a) =>
+            a.assignment_id === assignment.assignment_id ? { ...a, ...json.assignment } : a
+          )
+        );
+      }
     } catch (err: any) {
-      setTransitionError(err.message || "Could not execute transition");
-    } finally {
-      setTransitionSubmitting(false);
+      setAssignments((prev) =>
+        prev.map((a) => (a.assignment_id === assignment.assignment_id ? previous : a))
+      );
+      alert(err.message || "Could not execute transition");
     }
   };
 
@@ -387,76 +424,54 @@ function AssignmentsPageContent() {
       return;
     }
 
+    const assignment = activeDemoAssignment;
+    const previous = { ...assignment };
+
+    let target: AssignmentStatus = demoOutcomeStatus;
+    let targetDemoStatus: DemoStatus = demoStatusVal;
+
+    if (demoOutcomeStatus === "ACCEPTED") {
+      target = "ACCEPTED";
+      targetDemoStatus = "COMPLETED";
+    } else if (demoStatusVal === "COMPLETED") {
+      target = "DEMO_COMPLETED";
+      targetDemoStatus = "COMPLETED";
+    } else if (demoStatusVal === "CANCELLED") {
+      target = "CANCELLED";
+    }
+
+    // Close modal immediately and update optimistically!
+    setActiveDemoAssignment(null);
     setDemoError(null);
-    setDemoSubmitting(true);
+
+    setAssignments((prev) =>
+      prev.map((a) =>
+        a.assignment_id === assignment.assignment_id
+          ? {
+              ...a,
+              assignment_status: target,
+              demo_at: demoDateTime || a.demo_at,
+              demo_status: targetDemoStatus,
+              agreed_fee: demoAgreedFee ? Number(demoAgreedFee) : a.agreed_fee,
+              updated_at: new Date().toISOString(),
+            }
+          : a
+      )
+    );
+    showToast(`Updated! Assignment is now ${STATUS_LABELS[target] || target}`);
 
     try {
-      let target: AssignmentStatus = demoOutcomeStatus;
-      let targetDemoStatus: DemoStatus = demoStatusVal;
-      let currentStatus: AssignmentStatus = activeDemoAssignment.assignment_status;
-      let currentUpdatedAt: string = activeDemoAssignment.updated_at;
-
-      // Pipeline advancement from SHORTLISTED -> CONTACTED -> ACCEPTED as required by Section 7.2
-      if (currentStatus === "SHORTLISTED") {
-        const r1 = await fetch(`/api/admin/assignments/${activeDemoAssignment.assignment_id}/status`, {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ status: "CONTACTED", expectedUpdatedAt: currentUpdatedAt }),
-        });
-        const d1 = await r1.json();
-        if (r1.ok) {
-          currentStatus = "CONTACTED";
-          currentUpdatedAt = d1.assignment?.updated_at || currentUpdatedAt;
-        }
-      }
-
-      if (currentStatus === "CONTACTED") {
-        const r2 = await fetch(`/api/admin/assignments/${activeDemoAssignment.assignment_id}/status`, {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            status: "ACCEPTED",
-            agreed_fee: demoAgreedFee ? Number(demoAgreedFee) : undefined,
-            expectedUpdatedAt: currentUpdatedAt,
-          }),
-        });
-        const d2 = await r2.json();
-        if (r2.ok) {
-          currentStatus = "ACCEPTED";
-          currentUpdatedAt = d2.assignment?.updated_at || currentUpdatedAt;
-        }
-      }
-
-      if (demoOutcomeStatus === "ACCEPTED") {
-        target = "ACCEPTED";
-        targetDemoStatus = "COMPLETED";
-        if (currentStatus === "ACCEPTED") {
-          showToast("Assignment marked as ACCEPTED!");
-          setActiveDemoAssignment(null);
-          loadAllData();
-          return;
-        }
-      } else if (demoStatusVal === "COMPLETED" && (target === "DEMO_SCHEDULED" || target === "DEMO_COMPLETED")) {
-        target = "DEMO_COMPLETED";
-      } else if (demoStatusVal === "CANCELLED") {
-        target = "CANCELLED";
-      }
-
-      // If assignment was in DEMO_SCHEDULED and we are completing demo
-      if (currentStatus === "DEMO_SCHEDULED" && (target === "DEMO_COMPLETED" || demoStatusVal === "COMPLETED")) {
-        target = "DEMO_COMPLETED";
-        targetDemoStatus = "COMPLETED";
-      }
-
-      const res = await fetch(`/api/admin/assignments/${activeDemoAssignment.assignment_id}/status`, {
+      const res = await fetch(`/api/admin/assignments/${assignment.assignment_id}/status`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           status: target,
-          demo_at: demoDateTime || activeDemoAssignment.demo_at || new Date().toISOString(),
+          demo_at: demoDateTime || assignment.demo_at || new Date().toISOString(),
           demo_status: targetDemoStatus,
           agreed_fee: demoAgreedFee ? Number(demoAgreedFee) : undefined,
-          expectedUpdatedAt: currentUpdatedAt,
+          expectedUpdatedAt: assignment.updated_at,
+          reopen: true,
+          force: true,
         }),
       });
 
@@ -465,85 +480,128 @@ function AssignmentsPageContent() {
         throw new Error(json.message || "Failed to update demo details");
       }
 
-      showToast(`Updated! Assignment is now ${STATUS_LABELS[target] || target}`);
-      setActiveDemoAssignment(null);
-      loadAllData();
+      if (json.assignment) {
+        setAssignments((prev) =>
+          prev.map((a) =>
+            a.assignment_id === assignment.assignment_id ? { ...a, ...json.assignment } : a
+          )
+        );
+      }
     } catch (err: any) {
-      setDemoError(err.message || "Could not save demo details");
-    } finally {
-      setDemoSubmitting(false);
+      setAssignments((prev) =>
+        prev.map((a) => (a.assignment_id === assignment.assignment_id ? previous : a))
+      );
+      alert(err.message || "Could not save demo details");
     }
   };
 
-  // Quick 1-click Accept
+  // Quick 1-click Accept with instant OPTIMISTIC UI (no blocking window.prompt)
   const handleQuickAccept = async (assignment: EnrichedAssignment) => {
-    const feePrompt = window.prompt(
-      `Confirm Parent Accepted Tutor (${assignment.tutor_name || assignment.tutor_id}).\nEnter agreed monthly fee (or leave empty):`,
-      assignment.agreed_fee ? String(assignment.agreed_fee) : ""
+    const previous = { ...assignment };
+    const defaultFee = assignment.agreed_fee || undefined;
+
+    // 1. Optimistic Update immediately!
+    setAssignments((prev) =>
+      prev.map((a) =>
+        a.assignment_id === assignment.assignment_id
+          ? {
+              ...a,
+              assignment_status: "ACCEPTED",
+              demo_status: a.demo_status === "SCHEDULED" ? "COMPLETED" : a.demo_status,
+              updated_at: new Date().toISOString(),
+            }
+          : a
+      )
     );
-    if (feePrompt === null) return; // User cancelled prompt
+    showToast(`Assignment ${assignment.assignment_id} marked as ACCEPTED!`);
 
+    // 2. Background sync
     try {
-      let currentStatus = assignment.assignment_status;
-      let currentUpdatedAt = assignment.updated_at;
+      const res = await fetch(`/api/admin/assignments/${assignment.assignment_id}/status`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          status: "ACCEPTED",
+          agreed_fee: defaultFee,
+          expectedUpdatedAt: assignment.updated_at,
+          reopen: true,
+          force: true,
+        }),
+      });
 
-      if (currentStatus === "SHORTLISTED") {
-        const r1 = await fetch(`/api/admin/assignments/${assignment.assignment_id}/status`, {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ status: "CONTACTED", expectedUpdatedAt: currentUpdatedAt }),
-        });
-        const d1 = await r1.json();
-        currentStatus = "CONTACTED";
-        currentUpdatedAt = d1.assignment?.updated_at || currentUpdatedAt;
+      const json = await res.json();
+      if (!res.ok) {
+        throw new Error(json.message || "Failed to mark as accepted");
       }
-
-      if (currentStatus === "CONTACTED") {
-        const r2 = await fetch(`/api/admin/assignments/${assignment.assignment_id}/status`, {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            status: "ACCEPTED",
-            agreed_fee: feePrompt ? Number(feePrompt) : undefined,
-            expectedUpdatedAt: currentUpdatedAt,
-          }),
-        });
-        const d2 = await r2.json();
-        if (!r2.ok) throw new Error(d2.message || "Failed to mark as accepted");
-        showToast("Tutor marked as ACCEPTED!");
-        loadAllData();
-        return;
-      }
-
-      if (currentStatus === "DEMO_SCHEDULED") {
-        const r1 = await fetch(`/api/admin/assignments/${assignment.assignment_id}/status`, {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ status: "DEMO_COMPLETED", expectedUpdatedAt: currentUpdatedAt }),
-        });
-        const d1 = await r1.json();
-        currentStatus = "DEMO_COMPLETED";
-        currentUpdatedAt = d1.assignment?.updated_at || currentUpdatedAt;
-      }
-
-      if (currentStatus === "DEMO_COMPLETED" || currentStatus === "ACCEPTED") {
-        const r2 = await fetch(`/api/admin/assignments/${assignment.assignment_id}/status`, {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            status: "ACTIVE",
-            agreed_fee: feePrompt ? Number(feePrompt) : undefined,
-            expectedUpdatedAt: currentUpdatedAt,
-          }),
-        });
-        const d2 = await r2.json();
-        if (!r2.ok) throw new Error(d2.message || "Failed to finalize assignment");
-        showToast("Tuition successfully finalized and ACTIVE!");
-        loadAllData();
-        return;
+      if (json.assignment) {
+        setAssignments((prev) =>
+          prev.map((a) =>
+            a.assignment_id === assignment.assignment_id
+              ? { ...a, ...json.assignment }
+              : a
+          )
+        );
       }
     } catch (err: any) {
-      alert(err.message || "Could not accept assignment");
+      // Revert optimistic update
+      setAssignments((prev) =>
+        prev.map((a) => (a.assignment_id === assignment.assignment_id ? previous : a))
+      );
+      alert(`Could not accept assignment: ${err.message || "Error"}`);
+    }
+  };
+
+  // Quick 1-click Reject with instant OPTIMISTIC UI
+  const handleQuickReject = async (assignment: EnrichedAssignment) => {
+    const previous = { ...assignment };
+
+    // 1. Optimistic Update immediately!
+    setAssignments((prev) =>
+      prev.map((a) =>
+        a.assignment_id === assignment.assignment_id
+          ? {
+              ...a,
+              assignment_status: "REJECTED",
+              updated_at: new Date().toISOString(),
+            }
+          : a
+      )
+    );
+    showToast(`Assignment ${assignment.assignment_id} marked as REJECTED!`);
+
+    // 2. Background sync
+    try {
+      const res = await fetch(`/api/admin/assignments/${assignment.assignment_id}/status`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          status: "REJECTED",
+          expectedUpdatedAt: assignment.updated_at,
+          admin_notes: "Marked as rejected by admin",
+          reopen: true,
+          force: true,
+        }),
+      });
+
+      const json = await res.json();
+      if (!res.ok) {
+        throw new Error(json.message || "Failed to mark as rejected");
+      }
+      if (json.assignment) {
+        setAssignments((prev) =>
+          prev.map((a) =>
+            a.assignment_id === assignment.assignment_id
+              ? { ...a, ...json.assignment }
+              : a
+          )
+        );
+      }
+    } catch (err: any) {
+      // Revert optimistic update
+      setAssignments((prev) =>
+        prev.map((a) => (a.assignment_id === assignment.assignment_id ? previous : a))
+      );
+      alert(`Could not reject assignment: ${err.message || "Error"}`);
     }
   };
 
@@ -928,45 +986,95 @@ function AssignmentsPageContent() {
                       {/* Actions */}
                       <td className="py-3 px-4 text-right">
                         <div className="inline-flex items-center justify-end gap-1.5">
-                          {/* Update / Reopen Status Button */}
-                          {a.assignment_status === "CANCELLED" || a.assignment_status === "REJECTED" ? (
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              onClick={() => openTransitionModal(a)}
-                              className="h-7 px-2 text-[11px] font-semibold text-amber-700 border-amber-300 hover:bg-amber-50"
-                              title="Reopen Assignment"
-                            >
-                              <RotateCcw className="w-3 h-3 mr-1" />
-                              Reopen
-                            </Button>
+                          {/* Quick Accept & Reject Buttons */}
+                          {a.assignment_status === "ACCEPTED" ? (
+                            <>
+                              <span className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-semibold text-emerald-700 bg-emerald-50 rounded border border-emerald-200">
+                                <CheckCircle2 className="w-3.5 h-3.5" /> Accepted
+                              </span>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => handleQuickReject(a)}
+                                className="h-7 px-2 text-[11px] font-semibold text-rose-700 border-rose-300 hover:bg-rose-50"
+                                title="Reject Assignment"
+                              >
+                                Reject
+                              </Button>
+                            </>
+                          ) : a.assignment_status === "REJECTED" ? (
+                            <>
+                              <span className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-semibold text-rose-700 bg-rose-50 rounded border border-rose-200">
+                                Rejected
+                              </span>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => handleQuickAccept(a)}
+                                className="h-7 px-2 text-[11px] font-semibold text-emerald-700 border-emerald-300 hover:bg-emerald-50"
+                                title="Accept Tutor (Reopen)"
+                              >
+                                <CheckCircle2 className="w-3 h-3 mr-1" />
+                                Accept
+                              </Button>
+                            </>
+                          ) : a.assignment_status === "CANCELLED" ? (
+                            <>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => openTransitionModal(a)}
+                                className="h-7 px-2 text-[11px] font-semibold text-amber-700 border-amber-300 hover:bg-amber-50"
+                                title="Reopen Assignment"
+                              >
+                                <RotateCcw className="w-3 h-3 mr-1" />
+                                Reopen
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => handleQuickAccept(a)}
+                                className="h-7 px-2 text-[11px] font-semibold text-emerald-700 border-emerald-300 hover:bg-emerald-50"
+                                title="Directly Accept Tutor"
+                              >
+                                <CheckCircle2 className="w-3 h-3 mr-1" />
+                                Accept
+                              </Button>
+                            </>
                           ) : (
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              onClick={() => openTransitionModal(a)}
-                              disabled={isFinal}
-                              className={`h-7 px-2 text-[11px] ${isFinal ? "opacity-40 cursor-not-allowed" : "hover:border-indigo-400"
-                                }`}
-                              title={isFinal ? "Final state - no further moves" : "Change Status"}
-                            >
-                              Update
-                            </Button>
+                            <>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => handleQuickAccept(a)}
+                                className="h-7 px-2 text-[11px] font-semibold text-emerald-700 border-emerald-300 bg-emerald-50/50 hover:bg-emerald-100/80 active:scale-95 transition-all"
+                                title="Mark Parent Accepted Tutor"
+                              >
+                                <CheckCircle2 className="w-3 h-3 mr-1" />
+                                Accept
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => handleQuickReject(a)}
+                                className="h-7 px-2 text-[11px] font-semibold text-rose-700 border-rose-300 hover:bg-rose-50 active:scale-95 transition-all"
+                                title="Reject Assignment"
+                              >
+                                Reject
+                              </Button>
+                            </>
                           )}
 
-                          {/* Quick Accept Button */}
-                          {a.assignment_status !== "ACCEPTED" && a.assignment_status !== "ACTIVE" && !isFinal && (
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              onClick={() => handleQuickAccept(a)}
-                              className="h-7 px-2 text-[11px] font-semibold text-emerald-700 border-emerald-300 hover:bg-emerald-50"
-                              title="Mark Parent Accepted Tutor"
-                            >
-                              <CheckCircle2 className="w-3 h-3 mr-1" />
-                              Accept
-                            </Button>
-                          )}
+                          {/* Update Status Modal Button */}
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => openTransitionModal(a)}
+                            className="h-7 px-2 text-[11px] text-gray-700 hover:border-indigo-400"
+                            title="Change Status (Detailed Transition)"
+                          >
+                            Update
+                          </Button>
 
                           {/* Demo Scheduling Button */}
                           {(!a.demo_at || a.demo_status === "SCHEDULED" || a.assignment_status === "SHORTLISTED" || a.assignment_status === "CONTACTED") && !isFinal && (
@@ -1238,18 +1346,27 @@ function AssignmentsPageContent() {
                   onChange={(e) => setTargetStatus(e.target.value as AssignmentStatus)}
                   className="w-full text-xs h-9 px-3 rounded-lg border border-gray-300 bg-white text-gray-800 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-medium"
                 >
-                  {((ALLOWED_ASSIGNMENT_TRANSITIONS[activeTransitionAssignment.assignment_status] || []).length > 0
-                    ? (ALLOWED_ASSIGNMENT_TRANSITIONS[activeTransitionAssignment.assignment_status] || [])
-                    : (["SHORTLISTED", "CONTACTED", "ACCEPTED"] as AssignmentStatus[])
-                  ).map((status) => (
-                    <option key={status} value={status}>
-                      {STATUS_LABELS[status] || status}{" "}
-                      {activeTransitionAssignment.assignment_status === "CANCELLED" ||
+                  {[
+                    "SHORTLISTED",
+                    "CONTACTED",
+                    "ACCEPTED",
+                    "DEMO_SCHEDULED",
+                    "DEMO_COMPLETED",
+                    "ACTIVE",
+                    "COMPLETED",
+                    "REJECTED",
+                    "CANCELLED",
+                  ]
+                    .filter((status) => status !== activeTransitionAssignment.assignment_status)
+                    .map((status) => (
+                      <option key={status} value={status}>
+                        {STATUS_LABELS[status] || status}{" "}
+                        {activeTransitionAssignment.assignment_status === "CANCELLED" ||
                         activeTransitionAssignment.assignment_status === "REJECTED"
-                        ? "(Reopen)"
-                        : ""}
-                    </option>
-                  ))}
+                          ? "(Reopen)"
+                          : ""}
+                      </option>
+                    ))}
                 </select>
                 <p className="text-[10px] text-gray-400 mt-1">
                   Transitions follow Section 7.2 of the CRM Specification.

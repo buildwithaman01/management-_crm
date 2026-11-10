@@ -14,7 +14,7 @@ export async function POST(
     const tutorId = params.id;
     const body = await req.json();
     const { action, reason } = body as {
-      action: "VERIFY" | "REJECT" | "BLACKLIST";
+      action: "VERIFY" | "REJECT" | "BLACKLIST" | "PENDING";
       reason?: string;
     };
 
@@ -30,6 +30,8 @@ export async function POST(
         ? "Manually verified by admin"
         : action === "REJECT"
         ? "Application rejected by admin"
+        : action === "PENDING"
+        ? "Reset to pending by admin"
         : "Blacklisted by admin"
     );
 
@@ -42,12 +44,26 @@ export async function POST(
       patch.verification_status = "VERIFIED";
       patch.verified_at = now;
       patch.verified_by = "admin";
+      patch.rejection_reason = "";
     } else if (action === "REJECT") {
       patch.verification_status = "REJECTED";
       patch.rejection_reason = effectiveReason;
+      patch.verified_by = "";
     } else if (action === "BLACKLIST") {
       patch.verification_status = "BLACKLISTED";
       patch.blacklist_reason = effectiveReason;
+    } else if (action === "PENDING") {
+      patch.verification_status = "PENDING";
+      patch.verified_at = "";
+      patch.verified_by = "";
+      patch.rejection_reason = "";
+    }
+
+    // Keep local store in sync immediately for fast local read
+    try {
+      await localStore.updateRecord<Tutor>("Tutors", "tutor_id", tutorId, patch);
+    } catch {
+      // Ignore if absent in local store
     }
 
     if (process.env.SPREADSHEET_ID && process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL) {
@@ -121,14 +137,15 @@ export async function POST(
         }
       }
 
-      // Keep local store in sync
+      // Keep local store in sync with finalized record
       try {
-        await localStore.updateRecord<Tutor>("Tutors", "tutor_id", tutorId, patch);
+        await localStore.updateRecord<Tutor>("Tutors", "tutor_id", tutorId, updated);
       } catch {
-        // Ignore if absent in local store
+        // Ignore
       }
 
-      await logActivity({
+      // Log activity in background without blocking response
+      logActivity({
         adminId: "admin",
         entityType: "TUTOR",
         entityId: tutorId,
@@ -138,7 +155,7 @@ export async function POST(
           verification_status: [tutor.verification_status, patch.verification_status],
         },
         sheetsAdapter: adapter,
-      });
+      }).catch((logErr) => console.warn("[Verify Log Activity Async]", logErr));
 
       return NextResponse.json({
         success: true,

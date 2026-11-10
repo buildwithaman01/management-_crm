@@ -40,6 +40,7 @@ export async function PATCH(
       expectedUpdatedAt: body.expectedUpdatedAt,
       adminId: body.adminId || "admin",
       reopen: Boolean(body.reopen),
+      force: Boolean(body.force),
     };
 
     const updatedAssignment = await updateAssignmentStatus(input);

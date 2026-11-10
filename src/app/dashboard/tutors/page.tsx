@@ -45,6 +45,14 @@ export default function TutorsPage() {
   const [actionReason, setActionReason] = useState("");
   const [verifyError, setVerifyError] = useState<string | null>(null);
   const [isSubmittingVerify, setIsSubmittingVerify] = useState(false);
+  const [successToast, setSuccessToast] = useState<string | null>(null);
+
+  const showToast = (msg: string) => {
+    setSuccessToast(msg);
+    setTimeout(() => {
+      setSuccessToast(null);
+    }, 4000);
+  };
 
   // Edit & Delete modal states
   const [editingTutor, setEditingTutor] = useState<Tutor | null>(null);
@@ -251,26 +259,120 @@ export default function TutorsPage() {
     }
   };
 
-  const handleVerificationSubmit = async () => {
-    if (!activeTutor || !verifyModalAction) return;
-    setVerifyError(null);
-    setIsSubmittingVerify(true);
+  const handleQuickAction = async (
+    t: Tutor,
+    action: "VERIFY" | "REJECT" | "BLACKLIST" | "PENDING"
+  ) => {
+    const previous = { ...t };
+    const newStatus =
+      action === "VERIFY"
+        ? "VERIFIED"
+        : action === "REJECT"
+        ? "REJECTED"
+        : action === "PENDING"
+        ? "PENDING"
+        : "BLACKLISTED";
 
-    const effectiveReason = actionReason.trim() || (
-      verifyModalAction === "VERIFY"
-        ? "Manually verified by admin"
-        : verifyModalAction === "REJECT"
-        ? "Application rejected by admin"
-        : "Blacklisted by admin"
+    // 1. Instant optimistic update
+    setTutors((prev) =>
+      prev.map((item) =>
+        item.tutor_id === t.tutor_id
+          ? { ...item, verification_status: newStatus as TutorVerificationStatus }
+          : item
+      )
     );
+    if (activeTutor?.tutor_id === t.tutor_id) {
+      setActiveTutor((prev) =>
+        prev ? { ...prev, verification_status: newStatus as TutorVerificationStatus } : null
+      );
+    }
+    showToast(`Tutor ${t.full_name} marked as ${newStatus}!`);
 
+    // 2. Background sync
     try {
-      const res = await fetch(`/api/admin/tutors/${activeTutor.tutor_id}/verify`, {
+      const res = await fetch(`/api/admin/tutors/${t.tutor_id}/verify`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          action: verifyModalAction,
-          reason: effectiveReason,
+          action,
+          reason:
+            action === "VERIFY"
+              ? "Quick verified by admin"
+              : action === "REJECT"
+              ? "Quick rejected by admin"
+              : action === "PENDING"
+              ? "Reset to pending"
+              : "Blacklisted by admin",
+        }),
+      });
+
+      const json = await res.json();
+      if (!res.ok || !json.success) {
+        throw new Error(json.message || "Failed to update tutor status");
+      }
+
+      if (json.tutor) {
+        setTutors((prev) =>
+          prev.map((item) => (item.tutor_id === t.tutor_id ? json.tutor : item))
+        );
+        if (activeTutor?.tutor_id === t.tutor_id) {
+          setActiveTutor(json.tutor);
+        }
+      }
+    } catch (err: any) {
+      // Revert optimistic update
+      setTutors((prev) =>
+        prev.map((item) => (item.tutor_id === t.tutor_id ? previous : item))
+      );
+      if (activeTutor?.tutor_id === t.tutor_id) {
+        setActiveTutor(previous);
+      }
+      alert(`Could not save status for ${t.full_name}: ${err.message || "Error"}`);
+    }
+  };
+
+  const handleVerificationSubmit = async () => {
+    if (!activeTutor || !verifyModalAction) return;
+    const targetTutor = activeTutor;
+    const action = verifyModalAction;
+    const reason = actionReason.trim();
+
+    setVerifyError(null);
+    setIsSubmittingVerify(false);
+
+    // Close modal immediately and run quick action
+    setVerifyModalAction(null);
+    setActionReason("");
+
+    const previous = { ...targetTutor };
+    const newStatus =
+      action === "VERIFY"
+        ? "VERIFIED"
+        : action === "REJECT"
+        ? "REJECTED"
+        : "BLACKLISTED";
+
+    // 1. Instant optimistic update
+    setTutors((prev) =>
+      prev.map((item) =>
+        item.tutor_id === targetTutor.tutor_id
+          ? { ...item, verification_status: newStatus as TutorVerificationStatus }
+          : item
+      )
+    );
+    setActiveTutor((prev) =>
+      prev ? { ...prev, verification_status: newStatus as TutorVerificationStatus } : null
+    );
+    showToast(`Tutor ${targetTutor.full_name} marked as ${newStatus}!`);
+
+    // 2. Background sync
+    try {
+      const res = await fetch(`/api/admin/tutors/${targetTutor.tutor_id}/verify`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action,
+          reason: reason || (action === "VERIFY" ? "Manually verified by admin" : "Action by admin"),
         }),
       });
 
@@ -279,33 +381,19 @@ export default function TutorsPage() {
         throw new Error(json.message || "Action failed");
       }
 
-      // Update state
-      const newStatus =
-        verifyModalAction === "VERIFY"
-          ? "VERIFIED"
-          : verifyModalAction === "REJECT"
-          ? "REJECTED"
-          : "BLACKLISTED";
-
-      const updatedTutor = json.tutor || {
-        ...activeTutor,
-        verification_status: newStatus as TutorVerificationStatus,
-      };
-
-      setTutors((prev) =>
-        prev.map((t) =>
-          t.tutor_id === activeTutor.tutor_id ? updatedTutor : t
-        )
-      );
-
-      setActiveTutor(updatedTutor);
-      setVerifyModalAction(null);
-      setActionReason("");
-      loadTutors();
+      if (json.tutor) {
+        setTutors((prev) =>
+          prev.map((item) => (item.tutor_id === targetTutor.tutor_id ? json.tutor : item))
+        );
+        setActiveTutor(json.tutor);
+      }
     } catch (err: any) {
-      setVerifyError(err.message || "Failed to update verification status.");
-    } finally {
-      setIsSubmittingVerify(false);
+      // Revert optimistic update
+      setTutors((prev) =>
+        prev.map((item) => (item.tutor_id === targetTutor.tutor_id ? previous : item))
+      );
+      setActiveTutor(previous);
+      alert(`Could not update verification: ${err.message || "Action failed"}`);
     }
   };
 
@@ -398,6 +486,14 @@ export default function TutorsPage() {
 
   return (
     <div className="space-y-6">
+      {/* Toast Notification */}
+      {successToast && (
+        <div className="fixed top-4 right-4 z-70 bg-emerald-700 text-white px-4 py-2.5 rounded-lg shadow-xl text-xs font-semibold flex items-center gap-2 animate-in fade-in slide-in-from-top-3">
+          <CheckCircle2 className="w-4 h-4 text-emerald-200" />
+          <span>{successToast}</span>
+        </div>
+      )}
+
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
@@ -628,39 +724,56 @@ export default function TutorsPage() {
                     </td>
                     <td className="py-3.5 px-4 text-right">
                       <div className="inline-flex items-center gap-1.5">
-                        {/* Quick Direct Verify / Reject on row */}
-                        {t.verification_status !== "VERIFIED" ? (
+                        {/* Instant Quick Verify & Reject */}
+                        {t.verification_status === "VERIFIED" ? (
+                          <div className="inline-flex items-center gap-1">
+                            <span className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-semibold text-emerald-700 bg-emerald-50 rounded border border-emerald-200">
+                              <CheckCircle2 className="w-3.5 h-3.5" /> Verified
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => handleQuickAction(t, "REJECT")}
+                              className="px-1.5 py-1 text-[10px] font-medium text-amber-700 hover:bg-amber-50 rounded border border-amber-200"
+                              title="Revoke and mark as Rejected"
+                            >
+                              Reject
+                            </button>
+                          </div>
+                        ) : t.verification_status === "REJECTED" ? (
+                          <div className="inline-flex items-center gap-1">
+                            <span className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-semibold text-rose-700 bg-rose-50 rounded border border-rose-200">
+                              Rejected
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => handleQuickAction(t, "VERIFY")}
+                              className="inline-flex items-center gap-0.5 px-2 py-1 text-[11px] font-semibold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 rounded"
+                              title="Re-verify Tutor"
+                            >
+                              <ShieldCheck className="w-3.5 h-3.5" />
+                              <span>Verify</span>
+                            </button>
+                          </div>
+                        ) : (
                           <>
                             <button
                               type="button"
-                              onClick={() => {
-                                setActiveTutor(t);
-                                setVerifyModalAction("VERIFY");
-                                setActionReason("");
-                              }}
-                              className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-semibold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 rounded"
-                              title="Verify Tutor"
+                              onClick={() => handleQuickAction(t, "VERIFY")}
+                              className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-bold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-300 rounded shadow-2xs transition-all active:scale-95"
+                              title="One-click Quick Verify Tutor"
                             >
                               <ShieldCheck className="w-3.5 h-3.5" />
                               <span>Verify</span>
                             </button>
                             <button
                               type="button"
-                              onClick={() => {
-                                setActiveTutor(t);
-                                setVerifyModalAction("REJECT");
-                                setActionReason("");
-                              }}
-                              className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-semibold text-amber-700 bg-amber-50 hover:bg-amber-100 border border-amber-200 rounded"
+                              onClick={() => handleQuickAction(t, "REJECT")}
+                              className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-semibold text-amber-700 bg-amber-50 hover:bg-amber-100 border border-amber-200 rounded transition-all active:scale-95"
                               title="Reject Tutor"
                             >
                               <span>Reject</span>
                             </button>
                           </>
-                        ) : (
-                          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 bg-emerald-50 rounded">
-                            <CheckCircle2 className="w-3 h-3" /> Verified
-                          </span>
                         )}
 
                         {/* Direct Call Button */}
